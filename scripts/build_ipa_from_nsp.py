@@ -1778,6 +1778,7 @@ def find_repo(here):   # this file lives in the repository's scripts/; walk up t
             pass
     candidates = [
         Path.home() / 'Library/Application Support/nxnative/engine',
+        Path.home() / 'Library/Application Support/MetalNX/engine',
         Path.home() / 'nxnative',
         Path.home() / 'Developer/nxnative',
         Path.home() / 'Projects/nxnative',
@@ -1788,7 +1789,40 @@ def find_repo(here):   # this file lives in the repository's scripts/; walk up t
     ]
     for c in candidates:
         if (c / 'dm/tools/nx_extract/Program.cs').exists(): return c.resolve()
-    raise BuildError(f'cannot find the repository root above {here} (no dm/tools/nx_extract)')
+
+    # Auto-bootstrap writable engine repository into ~/Library/Application Support/MetalNX/engine
+    bootstrap_target = Path.home() / 'Library/Application Support/MetalNX/engine'
+    if (bootstrap_target / 'dm/tools/nx_extract/Program.cs').is_file():
+        return bootstrap_target.resolve()
+
+    bootstrap_target.mkdir(parents=True, exist_ok=True)
+    if shutil.which("git"):
+        try:
+            subprocess.run(["git", "clone", "--depth", "1", "https://github.com/krushant1122/MetalNX.git", str(bootstrap_target)],
+                           check=True, timeout=180, capture_output=True)
+            if (bootstrap_target / 'dm/tools/nx_extract/Program.cs').is_file():
+                return bootstrap_target.resolve()
+        except Exception:
+            pass
+
+    import zipfile
+    try:
+        with tempfile.TemporaryDirectory(prefix="metalnx_bootstrap_") as tmpdir:
+            zip_p = Path(tmpdir) / "engine.zip"
+            subprocess.run(["curl", "-sSL", "-f", "https://github.com/krushant1122/MetalNX/archive/refs/heads/main.zip", "-o", str(zip_p)],
+                           check=True, timeout=180)
+            with zipfile.ZipFile(zip_p, 'r') as zf:
+                zf.extractall(tmpdir)
+            inner = next(Path(tmpdir).glob("MetalNX-*"), None)
+            if inner and inner.is_dir():
+                for item in inner.iterdir():
+                    shutil.move(str(item), str(bootstrap_target / item.name))
+                if (bootstrap_target / 'dm/tools/nx_extract/Program.cs').is_file():
+                    return bootstrap_target.resolve()
+    except Exception:
+        pass
+
+    raise BuildError(f'cannot find the repository root above {here} (no dm/tools/nx_extract). Please run: git clone https://github.com/krushant1122/MetalNX.git ~/nxnative')
 
 
 def parse_args(argv):

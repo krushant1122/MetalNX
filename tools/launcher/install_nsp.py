@@ -710,14 +710,38 @@ def main():
         emit("ERROR", 0.0, "Configuration", f"Could not find build script at {build_script}")
         sys.exit(1)
 
-    cmd = [
-        sys.executable,
-        str(build_script),
-        str(nsp_dir),
-        "-k", str(keys_path),
-        "--platform", "mac-app",
-        "--progress", "lines",
+    uv_candidates = [
+        HERE / "bin/uv",
+        HERE / "uv",
+        Path("/Applications/MetalNX.app/Contents/Resources/bin/uv"),
+        Path.home() / ".switch/uv",
+        Path.home() / ".local/bin/uv",
     ]
+    uv_bin = next((c for c in uv_candidates if c.is_file() and os.access(c, os.X_OK)), shutil.which("uv"))
+    if uv_bin:
+        cmd = [
+            str(uv_bin), "run",
+            "--python", "3.12",
+            "--with", "lz4",
+            "--with", "capstone",
+            "--with", "fonttools",
+            "--with", "zstandard",
+            "python",
+            str(build_script),
+            str(nsp_dir),
+            "-k", str(keys_path),
+            "--platform", "mac-app",
+            "--progress", "lines",
+        ]
+    else:
+        cmd = [
+            sys.executable,
+            str(build_script),
+            str(nsp_dir),
+            "-k", str(keys_path),
+            "--platform", "mac-app",
+            "--progress", "lines",
+        ]
 
     # Realistic stage milestone weights
     stage_progression = [

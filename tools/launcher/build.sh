@@ -10,10 +10,21 @@ BUILD_DIR="$REPO_ROOT/build/launcher"
 APP_NAME="MetalNX.app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME"
 INSTALL_DIR="/Applications/$APP_NAME"
-VERSION="2.1.0"
+VERSION="2.1.1"
 
 echo "=== Building MetalNX Control Center v$VERSION ==="
 mkdir -p "$BUILD_DIR"
+
+# 5-second architectural lint step: catch undefined variables (F821) and syntax errors before packaging
+echo "-> Running pre-build static lint check..."
+if [ -f "$DIR/bin/uv" ]; then
+    "$DIR/bin/uv" run --with ruff ruff check --select F821,F822,F823,E9,F63 "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+elif command -v uv &> /dev/null; then
+    uv run --with ruff ruff check --select F821,F822,F823,E9,F63 "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+elif command -v ruff &> /dev/null; then
+    ruff check --select F821,F822,F823,E9,F63 "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+fi
+echo "✓ Pre-build lint check passed (zero undefined variables)"
 
 echo "-> Generating minimal MetalNX application icon..."
 python3 "$DIR/make_icon.py"
@@ -63,6 +74,14 @@ if [ -f "$DIR/bin/spirv-cross" ]; then
     mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
     cp "$DIR/bin/spirv-cross" "$APP_BUNDLE/Contents/Resources/bin/spirv-cross"
     chmod +x "$APP_BUNDLE/Contents/Resources/bin/spirv-cross"
+fi
+
+# Bundle standalone uv Python environment manager if present (zero Python/pip friction)
+if [ -f "$DIR/bin/uv" ]; then
+    echo "-> Bundling standalone uv Python environment manager..."
+    mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
+    cp "$DIR/bin/uv" "$APP_BUNDLE/Contents/Resources/bin/uv"
+    chmod +x "$APP_BUNDLE/Contents/Resources/bin/uv"
 fi
 
 # Bundle self-contained dmsh_xlate if built (zero .NET required for Stage 4 shader translation)
