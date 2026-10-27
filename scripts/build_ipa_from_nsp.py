@@ -393,6 +393,33 @@ def find_prebuilt_nx_extract(repo=None):
     return None
 
 
+def find_prebuilt_dmsh_xlate(repo=None):
+    if repo is None:
+        try: repo = find_repo(Path(__file__).resolve())
+        except Exception: repo = Path(__file__).resolve().parent.parent
+    candidates = [
+        Path('/Applications/MetalNX.app/Contents/Resources/bin/dmsh_xlate'),
+        Path('/Applications/MetalNX.app/Contents/Resources/dmsh_xlate'),
+        Path(__file__).resolve().parent.parent / 'tools/bin/dmsh_xlate',
+        repo / 'tools/bin/dmsh_xlate',
+        Path.home() / '.switch/dmsh_xlate',
+        repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate',
+    ]
+    for p in [Path(__file__).resolve().parent, Path(sys.executable).parent]:
+        candidates.append(p / 'dmsh_xlate')
+        candidates.append(p.parent / 'Resources/dmsh_xlate')
+        candidates.append(p.parent / 'Resources/bin/dmsh_xlate')
+
+    # Prefer self-contained binaries (> 50MB) over framework-dependent ones to avoid .NET runtime exit code 131/134
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK) and c.stat().st_size > 50_000_000:
+            return c
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return c
+    return None
+
+
 def build_nx_extract(repo, work, logs, env):
     """Build nx_extract into <work>/tools/nx_extract/. It is built in a temporary folder and copied over: with an apostrophe in the output path (e.g. "Bowser's Fury") MSBuild's conditions break,
     LibHac.dll and the executable are not copied, and the build still reports success"""
@@ -851,7 +878,7 @@ def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'm
     if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 capstone fonttools backports.zstd; backports.zstd only before Python 3.14)')
     tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
     if mac: del tools['xcodegen']
-    if find_prebuilt_nx_extract() or (Path.home() / '.switch/nx_extract').is_file():
+    if (find_prebuilt_nx_extract() or (Path.home() / '.switch/nx_extract').is_file()) and (find_prebuilt_dmsh_xlate() or (Path.home() / '.switch/dmsh_xlate').is_file()):
         tools.pop('dotnet', None)
     if _importable('compression.zstd') or _importable('backports.zstd'):
         tools.pop('zstd', None)
@@ -1909,7 +1936,15 @@ def main(args=None):
         except ValueError as e: raise BuildError(str(e)) from e
     say('Mac app: the Mac shaders and the Mac host, packed into a Mac app; no iOS shaders, Xcode project or IPA' if mac_pack else 'Mac-only build for development: the Mac shaders and the Mac host, no iOS shaders, Xcode project or IPA' if mac else f'Xcode project: {project}' if prepare_xcode else f'output IPA: {out_ipa}')
     say(f'work folder (extracted game files in extract/, {"kept for the next build" if keep else "deleted after the IPA is built"}): {work}')
-    xlate = repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'
+    xlate_standalone = find_prebuilt_dmsh_xlate(repo)
+    repo_xlate = repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'
+    if xlate_standalone and xlate_standalone.is_file() and xlate_standalone.stat().st_size > 50_000_000:
+        if not repo_xlate.is_file() or repo_xlate.stat().st_size < 50_000_000:
+            try:
+                shutil.copy2(xlate_standalone, repo_xlate)
+                repo_xlate.chmod(0o755)
+            except Exception: pass
+    xlate = repo_xlate if (repo_xlate.is_file() and os.access(repo_xlate, os.X_OK)) else (xlate_standalone or repo_xlate)
     # DM_GAME picks the profile; DM_ROOT / WORK point at <id>_build: the tools' default paths and temporary directories all stay inside it
     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'))
     logs = work / 'logs'

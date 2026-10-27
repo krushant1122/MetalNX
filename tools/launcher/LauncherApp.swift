@@ -723,7 +723,7 @@ class PortInstallerViewModel: ObservableObject {
         return """
 ### MetalNX Port Diagnostic & Crash Report
 - **Date**: \(dateStr)
-- **App Version**: MetalNX v2.0.8
+- **App Version**: MetalNX v2.0.9
 - **OS**: macOS \(osVersion)
 - **Hardware**: \(chipName) (\(memGB) RAM)
 - **Game**: \(targetGame) (`\(titleId)`)
@@ -779,7 +779,7 @@ class PortInstallerViewModel: ObservableObject {
             let truncatedLogs = consoleLogs.suffix(25).joined(separator: "\n")
             body = """
 ### MetalNX Port Diagnostic & Crash Report
-- **App Version**: MetalNX v2.0.8
+- **App Version**: MetalNX v2.0.9
 - **Game**: \(verificationResult?.gameName ?? "Unknown") (`\(verificationResult?.titleId ?? "")`)
 - **Failing Stage**: \(currentStage)
 - **Failure Reason**: \(errorMsg)

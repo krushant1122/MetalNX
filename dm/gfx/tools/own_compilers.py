@@ -9,7 +9,7 @@
 # Usage: own_compilers.py <dmsh_build.py arguments>   (the environment as for dmsh_build.py)
 import os, re, sys, runpy
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE); import dmsh_chain
-OWN = re.compile(r'(spirv-cross|metal_macosx|metal_iphoneos): lock (.*) / actual (?!missing$)(.*)')   # a missing compiler still stops the build
+OWN = re.compile(r'(spirv-cross|metal_macosx|metal_iphoneos|dmsh_xlate\.dll|Ryujinx\..*\.dll): lock (.*) / actual (?!missing$)(.*)')   # a missing compiler still stops the build
 strict = dmsh_chain.check_tools
 
 def check_tools():

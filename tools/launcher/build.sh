@@ -10,7 +10,7 @@ BUILD_DIR="$REPO_ROOT/build/launcher"
 APP_NAME="MetalNX.app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME"
 INSTALL_DIR="/Applications/$APP_NAME"
-VERSION="2.0.8"
+VERSION="2.0.9"
 
 echo "=== Building MetalNX Control Center v$VERSION ==="
 mkdir -p "$BUILD_DIR"
@@ -63,6 +63,14 @@ if [ -f "$DIR/bin/spirv-cross" ]; then
     mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
     cp "$DIR/bin/spirv-cross" "$APP_BUNDLE/Contents/Resources/bin/spirv-cross"
     chmod +x "$APP_BUNDLE/Contents/Resources/bin/spirv-cross"
+fi
+
+# Bundle self-contained dmsh_xlate if built (zero .NET required for Stage 4 shader translation)
+if [ -f "$REPO_ROOT/tools/bin/dmsh_xlate" ]; then
+    echo "-> Bundling self-contained dmsh_xlate (zero .NET required for Stage 4 shader translation)..."
+    mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
+    cp "$REPO_ROOT/tools/bin/dmsh_xlate" "$APP_BUNDLE/Contents/Resources/bin/dmsh_xlate"
+    chmod +x "$APP_BUNDLE/Contents/Resources/bin/dmsh_xlate"
 fi
 
 # Write Info.plist
@@ -121,6 +129,16 @@ ln -s /Applications "$DMG_STAGE/Applications"
 hdiutil create -volname "MetalNX" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_PATH" -quiet
 rm -rf "$DMG_STAGE"
 echo "✓ DMG Installer ready: $DMG_PATH"
+
+# Package standalone binary tarballs for release asset hosting
+if [ -f "$REPO_ROOT/tools/bin/nx_extract" ]; then
+    echo "-> Packaging nx_extract-osx-arm64.tar.gz..."
+    tar -czf "$BUILD_DIR/nx_extract-osx-arm64.tar.gz" -C "$REPO_ROOT/tools/bin" nx_extract
+fi
+if [ -f "$REPO_ROOT/tools/bin/dmsh_xlate" ]; then
+    echo "-> Packaging dmsh_xlate-osx-arm64.tar.gz..."
+    tar -czf "$BUILD_DIR/dmsh_xlate-osx-arm64.tar.gz" -C "$REPO_ROOT/tools/bin" dmsh_xlate
+fi
 
 if [ "$1" == "--install" ] || [ "$1" == "-i" ] || [ "$2" == "--install" ] || [ "$2" == "-i" ]; then
     echo "-> Installing MetalNX to /Applications..."

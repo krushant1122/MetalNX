@@ -72,8 +72,36 @@ def sha16(p): return hashlib.sha256(open(p, 'rb').read()).hexdigest()[:16]
 def tools_now():
     """Actual tool fingerprints: translator dll (including the Ryujinx shader library), spirv-cross, metal compiler (macOS / iOS)"""
     t = {}
-    for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll'): t[dll] = sha16(os.path.join(XLATE_DIR, dll))
-    t['xlate_source'] = subprocess.run([os.path.join(XLATE_DIR, 'dmsh_xlate'), '--source-sha'], capture_output=True, text=True).stdout.strip()
+    ref_dir = os.path.join(HERE, 'dmsh_xlate_bin')
+    for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll'):
+        dll_path = os.path.join(XLATE_DIR, dll)
+        if not os.path.exists(dll_path):
+            dll_path = os.path.join(ref_dir, dll)
+        t[dll] = sha16(dll_path) if os.path.exists(dll_path) else 'missing'
+    xlate_bin = os.environ.get('XLATE') or os.path.join(XLATE_DIR, 'dmsh_xlate')
+    res = subprocess.run([xlate_bin, '--source-sha'], capture_output=True, text=True)
+    out = res.stdout.strip()
+    if not out:
+        import shutil
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+        candidates = [
+            os.path.join(repo_root, 'tools/bin/dmsh_xlate'),
+            os.path.expanduser('~/.switch/dmsh_xlate'),
+            '/Applications/MetalNX.app/Contents/Resources/bin/dmsh_xlate',
+            '/Applications/MetalNX.app/Contents/Resources/dmsh_xlate',
+        ]
+        for c in candidates:
+            if os.path.isfile(c) and os.access(c, os.X_OK) and os.path.getsize(c) > 50_000_000:
+                try:
+                    shutil.copy2(c, xlate_bin)
+                    os.chmod(xlate_bin, 0o755)
+                    res = subprocess.run([xlate_bin, '--source-sha'], capture_output=True, text=True)
+                    out = res.stdout.strip()
+                    if out:
+                        break
+                except Exception:
+                    pass
+    t['xlate_source'] = out
     sc = subprocess.run(['which', 'spirv-cross'], capture_output=True, text=True).stdout.strip()
     t['spirv-cross'] = sha16(sc) if sc else 'missing'
     for sdk in ('macosx', 'iphoneos'):

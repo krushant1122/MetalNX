@@ -104,6 +104,62 @@ def ensure_nx_extract(repo_root):
     return None
 
 
+def ensure_dmsh_xlate(repo_root):
+    """Ensures standalone dmsh_xlate binary (>50MB) is available in ~/.switch/dmsh_xlate
+    and in repo_root / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate' so Stage 4 shader translation
+    runs without requiring .NET 10 SDK or runtime."""
+    candidates = [
+        HERE / "bin/dmsh_xlate",
+        HERE / "dmsh_xlate",
+        Path("/Applications/MetalNX.app/Contents/Resources/bin/dmsh_xlate"),
+        Path("/Applications/MetalNX.app/Contents/Resources/dmsh_xlate"),
+        repo_root / "tools/bin/dmsh_xlate",
+        Path.home() / ".switch/dmsh_xlate",
+    ]
+    # Check for self-contained binary (> 50MB) and overwrite stale framework-dependent ones
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK) and c.stat().st_size > 50_000_000:
+            target = Path.home() / ".switch/dmsh_xlate"
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.is_file() or target.stat().st_size < 50_000_000:
+                    shutil.copy2(c, target)
+                    os.chmod(target, 0o755)
+            except Exception:
+                pass
+            repo_xlate = repo_root / "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
+            try:
+                if repo_xlate.parent.is_dir() and (not repo_xlate.is_file() or repo_xlate.stat().st_size < 50_000_000):
+                    shutil.copy2(c, repo_xlate)
+                    os.chmod(repo_xlate, 0o755)
+            except Exception:
+                pass
+            return c
+
+    # Download standalone binary from GitHub release
+    emit("PROGRESS", 0.08, "Stage 1/7: Initializing", "Downloading standalone shader translator binary...", eta_sec=30)
+    target_dir = Path.home() / ".switch"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        url = "https://github.com/krushant1122/MetalNX/releases/download/v2.0.9/dmsh_xlate-osx-arm64.tar.gz"
+        subprocess.run(f'curl -sSL -f "{url}" | tar -xz -C "{target_dir}"', shell=True, check=True, timeout=120)
+        target = target_dir / "dmsh_xlate"
+        if target.is_file() and target.stat().st_size > 50_000_000:
+            os.chmod(target, 0o755)
+            repo_xlate = repo_root / "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
+            try:
+                if repo_xlate.parent.is_dir():
+                    shutil.copy2(target, repo_xlate)
+                    os.chmod(repo_xlate, 0o755)
+            except Exception:
+                pass
+            return target
+    except Exception:
+        pass
+
+    return None
+
+
 def is_valid_repo(p):
     """Determines if a directory is a complete nxnative engine repository."""
     if not p:
@@ -635,6 +691,11 @@ def main():
                 pass
 
     ensure_nx_extract(repo_root)
+    ensure_dmsh_xlate(repo_root)
+    xlate_bin = repo_root / "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
+    if xlate_bin.is_file() and os.access(xlate_bin, os.X_OK):
+        env["XLATE"] = str(xlate_bin)
+        os.environ["XLATE"] = str(xlate_bin)
 
     build_script = repo_root / "scripts/build_ipa_from_nsp.py"
     if not build_script.is_file():
