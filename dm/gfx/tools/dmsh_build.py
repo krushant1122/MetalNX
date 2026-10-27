@@ -864,9 +864,6 @@ def finish(key, w, j, c1):
         except (ValueError, subprocess.CalledProcessError) as e: return 'geometry failed', str(e)[:160], None
     if j['stage'] == 'vs': spv_single_lane(os.path.join(w, key + '.spv'))   # one-lane subgroups (see spv_single_lane)
     r = subprocess.run([SC_BIN, *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
-    if r.returncode:
-        # Some geometry / domain / Hull variations or compute shaders may hit rare spirv-cross corner cases; retry with relaxed options
-        pass
     if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
     src = open(msl).read()
     if j['stage'] == 'vs':   # second pass: re-translate with inputs that are only used as integers reported as uint (see int_inputs)
@@ -877,9 +874,6 @@ def finish(key, w, j, c1):
             if rx.returncode or not os.path.exists(os.path.join(w, key + '.spv')): return 'translation failed', ('integer-input retranslation: ' + rx.stderr.strip())[:160], None
             spv_single_lane(os.path.join(w, key + '.spv'))
             r = subprocess.run([SC_BIN, *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
-    if r.returncode:
-        # Some geometry / domain / Hull variations or compute shaders may hit rare spirv-cross corner cases; retry with relaxed options
-        pass
             if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
             src = open(msl).read()
     try: src = dmsh_atomic.lower_msl(src)
