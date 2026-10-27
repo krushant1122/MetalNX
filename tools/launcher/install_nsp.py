@@ -103,20 +103,63 @@ def ensure_engine_components():
         return target
 
     emit("PROGRESS", 0.02, "Stage 1/7: Initializing Engine", "Downloading MetalNX native engine components...", eta_sec=160, elapsed_sec=0)
+
+    # Clean up any corrupted, empty or partial previous directory
+    if target.exists():
+        try:
+            shutil.rmtree(target, ignore_errors=True)
+        except Exception:
+            pass
+
     target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", "https://github.com/krushant1122/MetalNX.git", str(target)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        if (target / "scripts/build_ipa_from_nsp.py").is_file():
-            return target
-    except Exception as e:
-        emit("ERROR", 0.0, "Engine Provisioning", f"Failed to download engine components: {e}. Please clone https://github.com/krushant1122/MetalNX to ~/nxnative.")
-        return None
+
+    # 1. Try git clone first if git is available
+    git_err = None
+    if shutil.which("git"):
+        try:
+            res = subprocess.run(
+                ["git", "clone", "--depth", "1", "https://github.com/krushant1122/MetalNX.git", str(target)],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if res.returncode == 0 and (target / "scripts/build_ipa_from_nsp.py").is_file():
+                return target
+            git_err = res.stderr.strip() if res.stderr else f"Exit code {res.returncode}"
+        except Exception as e:
+            git_err = str(e)
+
+    # 2. Fallback: Download repository archive via curl and extract via zipfile
+    emit("PROGRESS", 0.03, "Stage 1/7: Initializing Engine", "Downloading engine archive from GitHub...", eta_sec=90, elapsed_sec=0)
+    if target.exists():
+        shutil.rmtree(target, ignore_errors=True)
+
+    archive_url = "https://github.com/krushant1122/MetalNX/archive/refs/heads/main.zip"
+    with tempfile.TemporaryDirectory(prefix="metalnx_engine_") as tmpdir:
+        zip_path = Path(tmpdir) / "engine.zip"
+        try:
+            subprocess.run(["curl", "-sSL", "-f", archive_url, "-o", str(zip_path)], check=True, timeout=300)
+            if zip_path.is_file() and zip_path.stat().st_size > 1000:
+                extract_dir = Path(tmpdir) / "extracted"
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    zf.extractall(extract_dir)
+
+                inner = next(extract_dir.glob("MetalNX-*"), None)
+                if inner and inner.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    for item in inner.iterdir():
+                        shutil.move(str(item), str(target / item.name))
+                    if (target / "scripts/build_ipa_from_nsp.py").is_file():
+                        return target
+        except Exception as curl_err:
+            emit("ERROR", 0.0, "Engine Provisioning",
+                 f"Failed to download engine components ({curl_err}). "
+                 f"Please open Terminal and run:\n  git clone https://github.com/krushant1122/MetalNX.git ~/nxnative")
+            return None
+
+    emit("ERROR", 0.0, "Engine Provisioning",
+         f"Failed to download engine components: {git_err or 'Network or git error'}. "
+         f"Please open Terminal and run:\n  git clone https://github.com/krushant1122/MetalNX.git ~/nxnative")
     return None
 
 
