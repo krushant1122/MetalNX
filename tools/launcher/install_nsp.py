@@ -7,6 +7,7 @@ and pre-seeding of verified game-specific patch recipes.
 """
 
 import argparse
+import collections
 import json
 import os
 import re

@@ -11,9 +11,9 @@
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=flat-square&logo=swift)](https://swift.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-46%2F46_passing-brightgreen?style=flat-square)](#automated-tests)
-[![Release](https://img.shields.io/badge/Download-v2.0.1_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.1)
+[![Release](https://img.shields.io/badge/Download-v2.0.2_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.2)
 
-[**Download MetalNX-2.0.1.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.1) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
+[**Download MetalNX-2.0.2.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.2) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
 
 </div>
 
