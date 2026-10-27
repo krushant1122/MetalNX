@@ -431,6 +431,33 @@ if let outputStr = String(data: cliData, encoding: .utf8),
     assertTrue(false, "Failed to parse Python CLI verifier JSON output")
 }
 
+// Test 10: Repo Discovery & App Bundle Root Rejection
+print("\n--- Test 10: Repo Discovery & App Bundle Protection ---")
+let testRepoProc = Process()
+testRepoProc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+testRepoProc.arguments = ["-c", """
+import sys
+from pathlib import Path
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+app_res = Path('/Applications/MetalNX.app/Contents/Resources')
+assert not install_nsp.is_valid_repo(app_res), 'App bundle Resources must not be identified as repo root'
+root = install_nsp.find_repo_root()
+assert root is not None, 'Must discover a valid repository root'
+assert (root / 'dm/tools/nx_extract/Program.cs').is_file(), 'Root must have dm/tools/nx_extract/Program.cs'
+sys.path.insert(0, str(root / 'scripts'))
+import build_ipa_from_nsp
+discovered = build_ipa_from_nsp.find_repo(app_res / 'scripts/build_ipa_from_nsp.py')
+assert discovered is not None and (discovered / 'dm/tools/nx_extract/Program.cs').is_file()
+print('VALID_REPO_PASSED')
+"""]
+let repoPipe = Pipe()
+testRepoProc.standardOutput = repoPipe
+try? testRepoProc.run()
+testRepoProc.waitUntilExit()
+let repoOutput = String(data: repoPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(repoOutput.contains("VALID_REPO_PASSED"), "App bundle rejection and dynamic repo discovery verified")
+
 // Summary
 print("\n==================================================")
 print("TEST SUMMARY: \(testsPassed)/\(testsRun) passed (\(testsFailed) failed)")

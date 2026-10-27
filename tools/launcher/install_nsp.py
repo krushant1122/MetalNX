@@ -104,27 +104,45 @@ def ensure_nx_extract(repo_root):
     return None
 
 
+def is_valid_repo(p):
+    """Determines if a directory is a complete nxnative engine repository."""
+    if not p:
+        return False
+    try:
+        p = Path(p).resolve()
+        if not p.is_dir():
+            return False
+        # The internal macOS App bundle resources directory is never a repo root
+        if "MetalNX.app" in str(p) or ".app/Contents" in str(p):
+            return False
+        return (p / "scripts/build_ipa_from_nsp.py").is_file() and (p / "dm/tools/nx_extract/Program.cs").is_file()
+    except Exception:
+        return False
+
+
 def find_repo_root():
     """Dynamically locates the nxnative root repository across standard locations."""
     # 1. Environment variables
     for env_var in ["NXNATIVE_ROOT", "DM_ROOT"]:
         if env_var in os.environ:
             p = Path(os.environ[env_var]).resolve()
-            if (p / "scripts/build_ipa_from_nsp.py").is_file():
+            if is_valid_repo(p):
                 return p
 
     # 2. Saved user preference
     pref_file = Path.home() / "Library/Application Support/nxnative/repo_root.txt"
     if pref_file.is_file():
-        p = Path(pref_file.read_text().strip()).resolve()
-        if (p / "scripts/build_ipa_from_nsp.py").is_file():
-            return p
+        try:
+            p = Path(pref_file.read_text().strip()).resolve()
+            if is_valid_repo(p):
+                return p
+        except Exception:
+            pass
 
-    # 3. Check relative to script directory (when running from repo)
+    # 3. Check relative to script directory (when running from repo clone)
     candidates = [
         HERE.parent.parent,
         HERE.parent,
-        HERE,
         Path.home() / "Library/Application Support/nxnative/engine",
         Path.home() / "nxnative",
         Path.home() / "Developer/nxnative",
@@ -135,7 +153,7 @@ def find_repo_root():
         Path("/usr/local/nxnative"),
     ]
     for c in candidates:
-        if (c / "scripts/build_ipa_from_nsp.py").is_file():
+        if is_valid_repo(c):
             return c.resolve()
 
     return None
@@ -148,13 +166,13 @@ def ensure_engine_components():
         return root
 
     target = Path.home() / "Library/Application Support/nxnative/engine"
-    if (target / "scripts/build_ipa_from_nsp.py").is_file():
+    if is_valid_repo(target):
         return target
 
     emit("PROGRESS", 0.02, "Stage 1/7: Initializing Engine", "Downloading MetalNX native engine components...", eta_sec=160, elapsed_sec=0)
 
     # Clean up any corrupted, empty or partial previous directory
-    if target.exists():
+    if target.exists() and not is_valid_repo(target):
         try:
             shutil.rmtree(target, ignore_errors=True)
         except Exception:
@@ -172,7 +190,7 @@ def ensure_engine_components():
                 text=True,
                 timeout=300
             )
-            if res.returncode == 0 and (target / "scripts/build_ipa_from_nsp.py").is_file():
+            if res.returncode == 0 and is_valid_repo(target):
                 return target
             git_err = res.stderr.strip() if res.stderr else f"Exit code {res.returncode}"
         except Exception as e:
@@ -180,7 +198,7 @@ def ensure_engine_components():
 
     # 2. Fallback: Download repository archive via curl and extract via zipfile
     emit("PROGRESS", 0.03, "Stage 1/7: Initializing Engine", "Downloading engine archive from GitHub...", eta_sec=90, elapsed_sec=0)
-    if target.exists():
+    if target.exists() and not is_valid_repo(target):
         shutil.rmtree(target, ignore_errors=True)
 
     archive_url = "https://github.com/krushant1122/MetalNX/archive/refs/heads/main.zip"
@@ -198,7 +216,7 @@ def ensure_engine_components():
                     target.mkdir(parents=True, exist_ok=True)
                     for item in inner.iterdir():
                         shutil.move(str(item), str(target / item.name))
-                    if (target / "scripts/build_ipa_from_nsp.py").is_file():
+                    if is_valid_repo(target):
                         return target
         except Exception as curl_err:
             emit("ERROR", 0.0, "Engine Provisioning",
@@ -545,9 +563,23 @@ def main():
         emit("ERROR", 0.0, "Configuration", "Could not locate or download MetalNX engine. Please clone https://github.com/krushant1122/MetalNX to ~/nxnative or set NXNATIVE_ROOT.")
         sys.exit(1)
 
+    # Set authoritative environment variables so all sub-processes know the engine root
+    env["NXNATIVE_ROOT"] = str(repo_root)
+    env["DM_ROOT"] = str(repo_root)
+    os.environ["NXNATIVE_ROOT"] = str(repo_root)
+    os.environ["DM_ROOT"] = str(repo_root)
+
+    # Persist preference file
+    try:
+        pref_file = Path.home() / "Library/Application Support/nxnative/repo_root.txt"
+        pref_file.parent.mkdir(parents=True, exist_ok=True)
+        pref_file.write_text(str(repo_root))
+    except Exception:
+        pass
+
     # Synchronize latest bundled scripts into engine root so cached repos are always up to date
     bundled_scripts_dir = HERE / "scripts"
-    if bundled_scripts_dir.is_dir():
+    if bundled_scripts_dir.is_dir() and repo_root.resolve() != HERE.resolve():
         for sf in bundled_scripts_dir.glob("*.py"):
             try:
                 (repo_root / "scripts").mkdir(parents=True, exist_ok=True)

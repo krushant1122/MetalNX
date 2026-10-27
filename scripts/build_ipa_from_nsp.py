@@ -1711,6 +1711,29 @@ def mac_app(py, repo, out, app, work, game, patched, host, font, msl, aoc, gfx, 
 def find_repo(here):   # this file lives in the repository's scripts/; walk up to the level that has dm/tools/nx_extract/Program.cs
     for d in here.parents:
         if (d / 'dm/tools/nx_extract/Program.cs').exists(): return d
+    for env_var in ['NXNATIVE_ROOT', 'DM_ROOT']:
+        if env_var in os.environ:
+            p = Path(os.environ[env_var]).resolve()
+            if (p / 'dm/tools/nx_extract/Program.cs').exists(): return p
+    pref_file = Path.home() / 'Library/Application Support/nxnative/repo_root.txt'
+    if pref_file.is_file():
+        try:
+            p = Path(pref_file.read_text().strip()).resolve()
+            if (p / 'dm/tools/nx_extract/Program.cs').exists(): return p
+        except Exception:
+            pass
+    candidates = [
+        Path.home() / 'Library/Application Support/nxnative/engine',
+        Path.home() / 'nxnative',
+        Path.home() / 'Developer/nxnative',
+        Path.home() / 'Projects/nxnative',
+        Path.home() / 'Documents/nxnative',
+        Path.home() / 'Desktop/nxnative',
+        Path('/opt/nxnative'),
+        Path('/usr/local/nxnative'),
+    ]
+    for c in candidates:
+        if (c / 'dm/tools/nx_extract/Program.cs').exists(): return c.resolve()
     raise BuildError(f'cannot find the repository root above {here} (no dm/tools/nx_extract)')
 
 
