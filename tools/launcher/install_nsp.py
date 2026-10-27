@@ -68,7 +68,7 @@ def ensure_python_modules():
 
 
 def ensure_nx_extract(repo_root):
-    """Ensures nx_extract executable is available, copying from bundle or installing dotnet if missing."""
+    """Ensures nx_extract executable is available, copying from bundle or downloading standalone binary."""
     candidates = [
         HERE / "nx_extract",
         Path("/Applications/MetalNX.app/Contents/Resources/nx_extract"),
@@ -88,28 +88,19 @@ def ensure_nx_extract(repo_root):
                 pass
             return c
 
-    for c in candidates:
-        if c.is_file() and os.access(c, os.X_OK):
-            target = Path.home() / ".switch/nx_extract"
-            if not target.is_file():
-                try:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(c, target)
-                except Exception:
-                    pass
-            return c
-
-    # If dotnet is available, build_nx_extract can build it
-    if shutil.which("dotnet") or (Path.home() / ".dotnet/dotnet").is_file():
-        return None
-
-    # If neither prebuilt nor dotnet is present, auto-install .NET 10 via official script
-    emit("PROGRESS", 0.05, "Stage 1/7: Initializing", "Installing .NET 10 ARM64 runtime dependency...", eta_sec=45)
+    # Download standalone binary from GitHub release
+    emit("PROGRESS", 0.05, "Stage 1/7: Initializing", "Downloading standalone game extractor binary...", eta_sec=30)
+    target_dir = Path.home() / ".switch"
+    target_dir.mkdir(parents=True, exist_ok=True)
     try:
-        install_script = "curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0"
-        subprocess.run(install_script, shell=True, check=True, capture_output=True)
+        url = "https://github.com/krushant1122/MetalNX/releases/download/v2.0.2/nx_extract-osx-arm64.tar.gz"
+        subprocess.run(f'curl -sSL -f "{url}" | tar -xz -C "{target_dir}"', shell=True, check=True, timeout=120)
+        target = target_dir / "nx_extract"
+        if target.is_file() and target.stat().st_size > 50_000_000:
+            return target
     except Exception:
         pass
+
     return None
 
 

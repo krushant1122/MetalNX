@@ -370,10 +370,15 @@ def find_prebuilt_nx_extract(repo=None):
         except Exception: repo = Path(__file__).resolve().parent.parent
     candidates = [
         Path('/Applications/MetalNX.app/Contents/Resources/nx_extract'),
+        Path(__file__).resolve().parent.parent / 'tools/bin/nx_extract',
         repo / 'tools/bin/nx_extract',
         repo / 'tools/nx_extract/nx_extract',
         Path.home() / '.switch/nx_extract',
     ]
+    for p in [Path(__file__).resolve().parent, Path(sys.executable).parent]:
+        candidates.append(p / 'nx_extract')
+        candidates.append(p.parent / 'Resources/nx_extract')
+
     # Prefer self-contained binaries (> 50MB) over framework-dependent ones to avoid .NET runtime exit code 134
     for c in candidates:
         if c.is_file() and os.access(c, os.X_OK) and c.stat().st_size > 50_000_000:
@@ -393,11 +398,31 @@ def build_nx_extract(repo, work, logs, env):
         nx.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(prebuilt, nx)
         return nx
-    with tempfile.TemporaryDirectory(prefix='nx_extract_') as t:
-        run(['dotnet', 'build', repo / 'dm/tools/nx_extract', '-c', 'Release', '-o', t, '-v', 'quiet', '-nologo'], logs / 'nx_extract_build.log', env=env)
-        if not (Path(t) / 'nx_extract').exists(): raise BuildError(f'nx_extract built without an executable (see {logs / "nx_extract_build.log"})')
-        rmtree(nx.parent); shutil.copytree(t, nx.parent)
-    return nx
+
+    # Automatically download self-contained binary from GitHub releases if not found
+    try:
+        PROG.set(step='downloading standalone extractor')
+        target_dir = Path.home() / '.switch'
+        target_dir.mkdir(parents=True, exist_ok=True)
+        url = 'https://github.com/krushant1122/MetalNX/releases/download/v2.0.2/nx_extract-osx-arm64.tar.gz'
+        subprocess.run(f'curl -sSL -f "{url}" | tar -xz -C "{target_dir}"', shell=True, check=True, timeout=120)
+        downloaded = target_dir / 'nx_extract'
+        if downloaded.is_file() and downloaded.stat().st_size > 50_000_000:
+            nx.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(downloaded, nx)
+            return nx
+    except Exception:
+        pass
+
+    # Fallback to dotnet build if available
+    if shutil.which('dotnet', path=env.get('PATH', '')):
+        with tempfile.TemporaryDirectory(prefix='nx_extract_') as t:
+            run(['dotnet', 'build', repo / 'dm/tools/nx_extract', '-c', 'Release', '-o', t, '-v', 'quiet', '-nologo'], logs / 'nx_extract_build.log', env=env)
+            if not (Path(t) / 'nx_extract').exists(): raise BuildError(f'nx_extract built without an executable (see {logs / "nx_extract_build.log"})')
+            rmtree(nx.parent); shutil.copytree(t, nx.parent)
+        return nx
+
+    raise BuildError('nx_extract not found and could not download standalone extractor from GitHub.')
 
 
 def swap_in(tmp, dst):   # swap the new output in as a whole (the old one is untouched on failure)
