@@ -29,9 +29,7 @@
   <img src="tools/launcher/docs/screenshots/02_recipes_and_patches.png" width="48%" alt="Recipes & Patches Studio — Zelda: Breath of the Wild" />
   <img src="tools/launcher/docs/screenshots/01_tuning_control_center.png" width="48%" alt="Tuning Control Center — Graphics & MetalFX" />
 </p>
-<p align="center">
-  <img src="tools/launcher/docs/screenshots/03_one_click_port_installer.png" width="97%" alt="1-Click Native Port Studio" />
-</p>
+
 
 ---
 
