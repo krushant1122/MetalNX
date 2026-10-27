@@ -57,7 +57,7 @@ Per-game community recipes parsed from the engine database. Toggle individually 
 - **Present Snap Buffering** — aligns presentation timestamps with ProMotion and 60Hz displays
 - **Metal Performance HUD** — real-time FPS, frame time, and GPU load overlay
 
-### 📚 72-Game Compatibility Database
+### Compatibility Database
 Ships with an offline, self-contained catalog for all 72 registered Switch titles:
 - Tested update versions (e.g. Zelda: BotW `1.9.0 (v1114112)`, MK8D `4.0.0/4.0.1`, SSBU `13.0.3`)
 - Unsupported version advisories explaining missing shader dumps or patch stubs
@@ -109,7 +109,7 @@ Automatically detects your Mac and recommends settings:
 2. Mount the DMG and drag **MetalNX** into `/Applications`
 3. Launch from Spotlight (`⌘ Space → MetalNX`) or Launchpad
 
-### Option B — Build from Source
+### Build from Source
 
 ```bash
 git clone https://github.com/krushant1122/MetalNX.git
