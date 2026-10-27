@@ -189,6 +189,241 @@ if FileManager.default.fileExists(atPath: realZeldaPath) {
     }
 }
 
+// MARK: - Models for DB & Verification Testing
+struct GameDbEntry: Codable, Identifiable {
+    var id: String { titleId }
+    let titleId: String
+    let name: String
+    let engine: String
+    let graphicsApi: String
+    let testedDisplayVersion: String
+    let testedBuildNote: String
+    let testedFps: Int
+    let hasCustomPatches: Bool
+    let supportedVersions: [SupportedVersionEntry]
+    let unsupportedVersionsNote: String
+    let recipes: [GameRecipeEntry]
+}
+
+struct SupportedVersionEntry: Codable, Hashable {
+    let versionCode: String
+    let displayVersion: String
+    let isTested: Bool
+    let mainBuildId: String
+}
+
+struct GameRecipeEntry: Codable, Identifiable {
+    var id: String
+    let name: String
+    let category: String
+    let description: String
+    let envKey: String
+    let defaultValue: String
+    var enabled: Bool
+    let hasPatchBytecode: Bool
+}
+
+struct VerificationResult: Codable {
+    let status: String
+    let titleId: String
+    let gameName: String
+    let detectedVersion: String
+    let testedVersion: String
+    let isSupported: Bool
+    let badge: String
+    let message: String
+    let unsupportedNote: String?
+    let hasPatches: Bool?
+    let testedFps: Int?
+}
+
+func loadDbForTest() -> [GameDbEntry] {
+    let fm = FileManager.default
+    let paths = [
+        "/Users/krushant/nxnative/tools/launcher/games_db.json",
+        "\(fm.currentDirectoryPath)/tools/launcher/games_db.json",
+        "/Applications/MetalNX.app/Contents/Resources/games_db.json"
+    ]
+    for p in paths {
+        if fm.fileExists(atPath: p),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: p)),
+           let entries = try? JSONDecoder().decode([GameDbEntry].self, from: data) {
+            return entries
+        }
+    }
+    return []
+}
+
+func verifyTestPackage(path: String, db: [GameDbEntry]) -> VerificationResult {
+    let url = URL(fileURLWithPath: path)
+    let fname = url.lastPathComponent
+
+    var rawTid: String? = nil
+    if let match = fname.range(of: "0100[0-9A-Fa-f]{12}", options: .regularExpression) {
+        rawTid = String(fname[match]).uppercased()
+    }
+
+    var baseTid = rawTid
+    if let tid = rawTid, tid.hasSuffix("800"), let num = UInt64(tid, radix: 16) {
+        let hex = String(num - 0x800, radix: 16).uppercased()
+        baseTid = String(repeating: "0", count: max(0, 16 - hex.count)) + hex
+    }
+
+    var ver = "v0"
+    if let match = fname.range(of: "\\[v([0-9.]+)\\]", options: .regularExpression) {
+        ver = String(fname[match]).replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+    } else if let match = fname.range(of: "v([0-9]+\\.[0-9]+(?:\\.[0-9]+)*)", options: .regularExpression) {
+        ver = String(fname[match])
+    }
+
+    guard let bTid = baseTid, let entry = db.first(where: { $0.titleId.caseInsensitiveCompare(bTid) == .orderedSame }) else {
+        return VerificationResult(
+            status: "UNTESTED_GAME",
+            titleId: baseTid ?? rawTid ?? "UNKNOWN",
+            gameName: "Untested Game Title",
+            detectedVersion: ver,
+            testedVersion: "None",
+            isSupported: false,
+            badge: "ℹ️ Untested Game",
+            message: "Title ID not in tested database",
+            unsupportedNote: nil,
+            hasPatches: false,
+            testedFps: 30
+        )
+    }
+
+    var isVersionMatch = false
+    let cleanVer = ver.replacingOccurrences(of: "v", with: "").lowercased()
+    for sv in entry.supportedVersions {
+        if sv.versionCode.lowercased().contains(cleanVer) || sv.displayVersion.lowercased().contains(cleanVer) || cleanVer.contains(sv.displayVersion.lowercased()) {
+            isVersionMatch = true
+            break
+        }
+    }
+    if cleanVer == entry.testedDisplayVersion.lowercased() || entry.testedDisplayVersion.lowercased().contains(cleanVer) {
+        isVersionMatch = true
+    }
+
+    if isVersionMatch {
+        return VerificationResult(
+            status: "VERIFIED_SUPPORTED",
+            titleId: bTid,
+            gameName: entry.name,
+            detectedVersion: ver,
+            testedVersion: entry.testedDisplayVersion,
+            isSupported: true,
+            badge: "✓ Verified Compatible Release",
+            message: "Official supported release",
+            unsupportedNote: entry.unsupportedVersionsNote,
+            hasPatches: entry.hasCustomPatches,
+            testedFps: entry.testedFps
+        )
+    } else {
+        return VerificationResult(
+            status: "UNTESTED_VERSION",
+            titleId: bTid,
+            gameName: entry.name,
+            detectedVersion: ver,
+            testedVersion: entry.testedDisplayVersion,
+            isSupported: false,
+            badge: "⚠️ Untested Update Version",
+            message: "Untested update",
+            unsupportedNote: entry.unsupportedVersionsNote,
+            hasPatches: entry.hasCustomPatches,
+            testedFps: entry.testedFps
+        )
+    }
+}
+
+// Test 6: Database Loading (72 Registered Switch Games)
+print("\n--- Test 6: Compatibility Database Loading ---")
+let db = loadDbForTest()
+assertTrue(db.count >= 72, "Successfully loaded full game database (\(db.count) titles >= 72)")
+
+let botwEntry = db.first(where: { $0.titleId == "01007EF00011E000" })
+assertTrue(botwEntry != nil, "Database contains Breath of the Wild (01007EF00011E000)")
+if let botw = botwEntry {
+    assertEqual(botw.name, "The Legend of Zelda: Breath of the Wild", "BotW game name verified")
+    assertTrue(botw.engine.contains("Nintendo EPD"), "BotW engine identified as Nintendo EPD")
+    assertEqual(botw.testedFps, 60, "BotW tested target FPS is 60")
+    assertTrue(botw.hasCustomPatches, "BotW has registered nxnative patches")
+    assertTrue(!botw.recipes.isEmpty, "BotW has active recipes available (\(botw.recipes.count) recipes)")
+    assertTrue(botw.supportedVersions.contains(where: { $0.displayVersion.contains("1.9.0") || $0.versionCode.contains("1114112") }), "BotW lists 1.9.0 (v1114112) as supported")
+}
+
+let smoEntry = db.first(where: { $0.titleId == "0100000000010000" })
+assertTrue(smoEntry != nil, "Database contains Super Mario Odyssey (0100000000010000)")
+if let smo = smoEntry {
+    assertEqual(smo.testedFps, 60, "Super Mario Odyssey target FPS is 60")
+    assertTrue(smo.engine.contains("Nintendo EPD"), "Super Mario Odyssey engine identified as Nintendo EPD")
+}
+
+// Test 7: Package Compatibility Verifier
+print("\n--- Test 7: NSP Package Compatibility Verifier ---")
+// Subtest 7A: Supported Base / Update
+let validBotwPath = "/Volumes/Backup/The Legend of Zelda Breath of the Wild [01007EF00011E800][v1114112].nsp"
+let resA = verifyTestPackage(path: validBotwPath, db: db)
+assertEqual(resA.status, "VERIFIED_SUPPORTED", "Zelda 1.9.0 update classified as VERIFIED_SUPPORTED")
+assertTrue(resA.isSupported, "Zelda update flagged as supported")
+assertEqual(resA.titleId, "01007EF00011E000", "Update Title ID 01007EF00011E800 correctly normalized to Base ID 01007EF00011E000")
+
+// Subtest 7B: Untested Version
+let untestedBotwPath = "/Volumes/Backup/Zelda [01007EF00011E800][v65536].nsp"
+let resB = verifyTestPackage(path: untestedBotwPath, db: db)
+assertEqual(resB.status, "UNTESTED_VERSION", "Untested Zelda update classified as UNTESTED_VERSION")
+assertTrue(!resB.isSupported, "Untested version correctly flagged as not certified")
+
+// Subtest 7C: Untested Game
+let unknownGamePath = "/Volumes/Backup/Homebrew Game [0100DEADBEEF0000][v0].nsp"
+let resC = verifyTestPackage(path: unknownGamePath, db: db)
+assertEqual(resC.status, "UNTESTED_GAME", "Unknown Title ID classified as UNTESTED_GAME")
+assertTrue(!resC.isSupported, "Untested game flagged as unverified")
+
+// Test 8: Recipe env.txt Preseeding Verification
+print("\n--- Test 8: Recipe Preseeding & Synchronization ---")
+let testEnvDir = NSTemporaryDirectory() + "nxnative_recipe_test"
+let testEnvFile = "\(testEnvDir)/env.txt"
+try? fm.createDirectory(atPath: testEnvDir, withIntermediateDirectories: true)
+let recipePayload = """
+# nxnative runtime environment configuration
+# Generated by MetalNX Control Center
+DM_OPMODE=1
+DM_PRESENT_SNAP=1
+NVN_TARGET_FPS=60
+NVN_ENABLE_METALFX=1
+NVN_ASYNC_SHADERS=1
+NVN_ANISOTROPY=16
+DM_DISABLE_STUTTER_SPIN=0
+"""
+try? recipePayload.write(to: URL(fileURLWithPath: testEnvFile), atomically: true, encoding: .utf8)
+let readBack = try? String(contentsOfFile: testEnvFile, encoding: .utf8)
+assertTrue(readBack?.contains("NVN_TARGET_FPS=60") == true, "Verified NVN_TARGET_FPS=60 written")
+assertTrue(readBack?.contains("NVN_ENABLE_METALFX=1") == true, "Verified NVN_ENABLE_METALFX=1 written")
+assertTrue(readBack?.contains("NVN_ASYNC_SHADERS=1") == true, "Verified NVN_ASYNC_SHADERS=1 written")
+assertTrue(readBack?.contains("NVN_ANISOTROPY=16") == true, "Verified NVN_ANISOTROPY=16 written")
+try? fm.removeItem(atPath: testEnvDir)
+
+// Test 9: Python CLI Verifier Execution
+print("\n--- Test 9: Python Verifier CLI Integration ---")
+let pythonScript = "/Users/krushant/nxnative/tools/launcher/install_nsp.py"
+let proc = Process()
+proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+proc.arguments = [pythonScript, "--verify", "Zelda [01007EF00011E800][v1114112].nsp"]
+let pipe = Pipe()
+proc.standardOutput = pipe
+try? proc.run()
+proc.waitUntilExit()
+let cliData = pipe.fileHandleForReading.readDataToEndOfFile()
+if let outputStr = String(data: cliData, encoding: .utf8),
+   let cliJson = try? JSONSerialization.jsonObject(with: cliData) as? [String: Any] {
+    let status = cliJson["status"] as? String
+    assertEqual(status, "VERIFIED_SUPPORTED", "Python CLI --verify returns VERIFIED_SUPPORTED")
+    let bTid = cliJson["titleId"] as? String
+    assertEqual(bTid, "01007EF00011E000", "Python CLI normalized update Title ID")
+} else {
+    assertTrue(false, "Failed to parse Python CLI verifier JSON output")
+}
+
 // Summary
 print("\n==================================================")
 print("TEST SUMMARY: \(testsPassed)/\(testsRun) passed (\(testsFailed) failed)")

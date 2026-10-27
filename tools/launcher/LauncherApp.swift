@@ -43,6 +43,167 @@ struct GameProfile: Identifiable, Hashable {
     }
 }
 
+// MARK: - Game Database & Recipe Models
+struct GameDbEntry: Codable, Identifiable {
+    var id: String { titleId }
+    let titleId: String
+    let name: String
+    let engine: String
+    let graphicsApi: String
+    let testedDisplayVersion: String
+    let testedBuildNote: String
+    let testedFps: Int
+    let hasCustomPatches: Bool
+    let supportedVersions: [SupportedVersionEntry]
+    let unsupportedVersionsNote: String
+    let recipes: [GameRecipeEntry]
+}
+
+struct SupportedVersionEntry: Codable, Hashable {
+    let versionCode: String
+    let displayVersion: String
+    let isTested: Bool
+    let mainBuildId: String
+}
+
+struct GameRecipeEntry: Codable, Identifiable {
+    var id: String
+    let name: String
+    let category: String
+    let description: String
+    let envKey: String
+    let defaultValue: String
+    var enabled: Bool
+    let hasPatchBytecode: Bool
+}
+
+struct VerificationResult: Codable {
+    let status: String // "VERIFIED_SUPPORTED", "UNTESTED_VERSION", "UNTESTED_GAME"
+    let titleId: String
+    let gameName: String
+    let detectedVersion: String
+    let testedVersion: String
+    let isSupported: Bool
+    let badge: String
+    let message: String
+    let unsupportedNote: String?
+    let hasPatches: Bool?
+    let testedFps: Int?
+}
+
+func loadGamesDatabase() -> [GameDbEntry] {
+    let fm = FileManager.default
+    var candidates: [String] = []
+    if let resPath = Bundle.main.path(forResource: "games_db", ofType: "json") {
+        candidates.append(resPath)
+    }
+    candidates.append("\(Bundle.main.bundlePath)/Contents/Resources/games_db.json")
+    candidates.append("\(fm.currentDirectoryPath)/tools/launcher/games_db.json")
+    candidates.append("/Users/krushant/nxnative/tools/launcher/games_db.json")
+    candidates.append("\(fm.homeDirectoryForCurrentUser.path)/Library/Application Support/nxnative/games_db.json")
+    candidates.append("/Applications/MetalNX.app/Contents/Resources/games_db.json")
+
+    for path in candidates {
+        if fm.fileExists(atPath: path),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+           let entries = try? JSONDecoder().decode([GameDbEntry].self, from: data) {
+            return entries
+        }
+    }
+    return []
+}
+
+func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
+    let url = URL(fileURLWithPath: path)
+    let fname = url.lastPathComponent
+
+    var rawTid: String? = nil
+    if let match = fname.range(of: "0100[0-9A-Fa-f]{12}", options: .regularExpression) {
+        rawTid = String(fname[match]).uppercased()
+    }
+
+    if rawTid == nil, let fileHandle = try? FileHandle(forReadingFrom: url) {
+        let data = fileHandle.readData(ofLength: 65536)
+        if let ascii = String(data: data, encoding: .isoLatin1) {
+            if let match = ascii.range(of: "0100[0-9A-Fa-f]{12}", options: .regularExpression) {
+                rawTid = String(ascii[match]).uppercased()
+            }
+        }
+        try? fileHandle.close()
+    }
+
+    var baseTid = rawTid
+    if let tid = rawTid, tid.hasSuffix("800"), let num = UInt64(tid, radix: 16) {
+        let hex = String(num - 0x800, radix: 16).uppercased()
+        baseTid = String(repeating: "0", count: max(0, 16 - hex.count)) + hex
+    }
+
+    var ver = "v0"
+    if let match = fname.range(of: "\\[v([0-9.]+)\\]", options: .regularExpression) {
+        ver = String(fname[match]).replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+    } else if let match = fname.range(of: "v([0-9]+\\.[0-9]+(?:\\.[0-9]+)*)", options: .regularExpression) {
+        ver = String(fname[match])
+    }
+
+    guard let bTid = baseTid, let entry = db.first(where: { $0.titleId.caseInsensitiveCompare(bTid) == .orderedSame }) else {
+        return VerificationResult(
+            status: "UNTESTED_GAME",
+            titleId: baseTid ?? rawTid ?? "UNKNOWN",
+            gameName: "Untested Game Title",
+            detectedVersion: ver,
+            testedVersion: "None",
+            isSupported: false,
+            badge: "ℹ️ Untested Game",
+            message: "Title ID \(baseTid ?? rawTid ?? "Unknown") is not present in the nxnative tested database. Installation will attempt a provisional survey; port may or may not succeed.",
+            unsupportedNote: "This title has not been tested by the nxnative community. Graphics and stability are unverified.",
+            hasPatches: false,
+            testedFps: 30
+        )
+    }
+
+    var isVersionMatch = false
+    let cleanVer = ver.replacingOccurrences(of: "v", with: "").lowercased()
+    for sv in entry.supportedVersions {
+        if sv.versionCode.lowercased().contains(cleanVer) || sv.displayVersion.lowercased().contains(cleanVer) || cleanVer.contains(sv.displayVersion.lowercased()) {
+            isVersionMatch = true
+            break
+        }
+    }
+    if cleanVer == entry.testedDisplayVersion.lowercased() || entry.testedDisplayVersion.lowercased().contains(cleanVer) {
+        isVersionMatch = true
+    }
+
+    if isVersionMatch {
+        return VerificationResult(
+            status: "VERIFIED_SUPPORTED",
+            titleId: bTid,
+            gameName: entry.name,
+            detectedVersion: ver,
+            testedVersion: entry.testedDisplayVersion,
+            isSupported: true,
+            badge: "✓ Verified Compatible Release",
+            message: "✓ \(entry.name) (Version \(entry.testedDisplayVersion)) is an officially tested and supported release.",
+            unsupportedNote: entry.unsupportedVersionsNote,
+            hasPatches: entry.hasCustomPatches,
+            testedFps: entry.testedFps
+        )
+    } else {
+        return VerificationResult(
+            status: "UNTESTED_VERSION",
+            titleId: bTid,
+            gameName: entry.name,
+            detectedVersion: ver,
+            testedVersion: entry.testedDisplayVersion,
+            isSupported: false,
+            badge: "⚠️ Untested Update Version",
+            message: "⚠️ Detected version '\(ver)' for \(entry.name) is unverified. Officially tested update is '\(entry.testedDisplayVersion)'.",
+            unsupportedNote: entry.unsupportedVersionsNote,
+            hasPatches: entry.hasCustomPatches,
+            testedFps: entry.testedFps
+        )
+    }
+}
+
 // MARK: - Known Game Database Catalog
 let kKnownGameCatalog: [GameProfile] = [
     GameProfile(titleId: "01007EF00011E000", title: "The Legend of Zelda: Breath of the Wild", shortTitle: "Zelda: BotW", iconName: "sparkles", defaultFps: 30, isHeavy3D: true),
@@ -92,6 +253,8 @@ struct GameSettings: Equatable {
     var drawDistance: Double = 1.0
     var padLayout: String = "xbox" // "nintendo" or "xbox"
     var fpsHold: Bool = true
+    var asyncShaders: Bool = true
+    var anisotropicFiltering: Int = 16
 
     func generateEnvContent() -> String {
         var lines: [String] = []
@@ -104,6 +267,9 @@ struct GameSettings: Equatable {
         lines.append("DM_PRESENT_SNAP=\(presentSnap ? "1" : "0")")
         lines.append("DM_SPIN=\(antiStutterSpin ? "0" : "1")")
         lines.append("DM_METAL_HUD=\(metalHud ? "1" : "0")")
+        lines.append("NVN_ASYNC_SHADERS=\(asyncShaders ? "1" : "0")")
+        lines.append("NVN_ANISOTROPY=\(anisotropicFiltering)")
+        lines.append("DM_PSO_PREBUILD=\(asyncShaders ? "1" : "0")")
         if drawDistance > 1.0 {
             lines.append(String(format: "DM_LOD_SCALE=%.1f", drawDistance))
         }
@@ -126,6 +292,9 @@ struct GameSettings: Equatable {
             "DM_PRESENT_SNAP": presentSnap ? "1" : "0",
             "DM_SPIN": antiStutterSpin ? "0" : "1",
             "DM_METAL_HUD": metalHud ? "1" : "0",
+            "NVN_ASYNC_SHADERS": asyncShaders ? "1" : "0",
+            "NVN_ANISOTROPY": "\(anisotropicFiltering)",
+            "DM_PSO_PREBUILD": asyncShaders ? "1" : "0",
             "DM_LOD_SCALE": String(format: "%.1f", drawDistance),
             "DM_PAD_LAYOUT": padLayout,
             "DM_NVN_FAST_WAKE": "1",
@@ -209,11 +378,21 @@ class PortInstallerViewModel: ObservableObject {
     @Published var installedAppPath: String? = nil
     @Published var isCompleted: Bool = false
     @Published var errorMessage: String? = nil
+    @Published var verificationResult: VerificationResult? = nil
 
     private var activeProcess: Process?
 
     init() {
         autoDetectKeys()
+    }
+
+    func verifyPackages(with db: [GameDbEntry]) {
+        let target = !updateNspPath.isEmpty ? updateNspPath : baseNspPath
+        guard !target.isEmpty else {
+            verificationResult = nil
+            return
+        }
+        verificationResult = verifyPackageFile(path: target, db: db)
     }
 
     func autoDetectKeys() {
@@ -243,7 +422,7 @@ class PortInstallerViewModel: ObservableObject {
         return "\(m)m \(s)s"
     }
 
-    func browseBaseNsp() {
+    func browseBaseNsp(db: [GameDbEntry] = []) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -259,10 +438,11 @@ class PortInstallerViewModel: ObservableObject {
             folderPath = ""
             isCompleted = false
             errorMessage = nil
+            verifyPackages(with: db)
         }
     }
 
-    func browseUpdateNsp() {
+    func browseUpdateNsp(db: [GameDbEntry] = []) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -278,6 +458,7 @@ class PortInstallerViewModel: ObservableObject {
             folderPath = ""
             isCompleted = false
             errorMessage = nil
+            verifyPackages(with: db)
         }
     }
 
@@ -480,15 +661,39 @@ class LauncherViewModel: ObservableObject {
     @Published var verification: VerificationStatus = VerificationStatus()
     @Published var isScanning: Bool = false
     @Published var activeTab: Int = 0
+    @Published var gamesDatabase: [GameDbEntry] = []
+    @Published var showingDatabaseSheet: Bool = false
 
     var selectedGame: GameProfile? {
         return detectedGames.first(where: { $0.titleId == selectedGameId })
     }
 
+    var selectedGameDbEntry: GameDbEntry? {
+        return gamesDatabase.first(where: { $0.titleId.caseInsensitiveCompare(selectedGameId) == .orderedSame })
+    }
+
     init() {
+        gamesDatabase = loadGamesDatabase()
         scanInstalledGames()
         loadSettings()
         verifySettings()
+    }
+
+    func applyAllOptimalRecipes() {
+        guard selectedGame != nil else { return }
+        var rec = settings
+        rec.fpsTarget = 60
+        rec.fpsHold = true
+        rec.metalFx = true
+        rec.renderScale = 0.85
+        rec.opMode = 1
+        rec.presentSnap = true
+        rec.asyncShaders = true
+        rec.anisotropicFiltering = 16
+        rec.antiStutterSpin = true
+        self.settings = rec
+        saveSettings()
+        flashStatus("✓ All optimal recipes applied & synchronized")
     }
 
     func scanInstalledGames() {
@@ -750,6 +955,10 @@ class LauncherViewModel: ObservableObject {
                     loaded.fpsHold = (val.lowercased() == "on" || val == "1")
                 case "DM_METALFX_COLOR":
                     loaded.metalFxColorMode = (val.lowercased() == "linear") ? "linear" : "perceptual"
+                case "NVN_ASYNC_SHADERS", "DM_PSO_PREBUILD":
+                    loaded.asyncShaders = (val == "1")
+                case "NVN_ANISOTROPY":
+                    if let v = Int(val) { loaded.anisotropicFiltering = v }
                 default:
                     break
                 }
@@ -926,8 +1135,10 @@ struct ContentView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 if vm.activeTab == 0 {
                     LiquidLibraryTweakerView(vm: vm, showingConfigSheet: $showingConfigSheet)
+                } else if vm.activeTab == 1 {
+                    LiquidRecipesView(vm: vm)
                 } else {
-                    LiquidPortInstallerView(installerVm: installerVm) { newAppPath in
+                    LiquidPortInstallerView(installerVm: installerVm, vm: vm) { newAppPath in
                         vm.scanInstalledGames()
                         vm.activeTab = 0
                     }
@@ -1002,20 +1213,84 @@ struct ContentView: View {
         .focusable(false)
                     .disabled(vm.selectedGame == nil)
                     .opacity(vm.selectedGame == nil ? 0.35 : 1.0)
-                } else {
-                    Text("1-Click Switch NSP to Native macOS ARM64 Translator")
-                        .font(.system(size: 11))
-                        .foregroundColor(Color.white.opacity(0.45))
+                } else if vm.activeTab == 1 {
+                    Button(action: {
+                        vm.applyAllOptimalRecipes()
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "wand.and.stars")
+                            Text("Apply All Optimal Recipes")
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Color.white.opacity(0.85))
+                        .padding(.horizontal, 14)
+                        .frame(height: 28)
+                        .background(Color.materialThinElevated)
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.hairlineSpecular, lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
 
                     Spacer()
 
-                    Button("Return to Configuration") {
+                    Button(action: {
+                        showingConfigSheet = true
+                    }) {
+                        Text("View env.txt")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color.iceBlue)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+
+                    Button(action: {
+                        vm.launchGame()
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 10))
+                            Text("Play Now")
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .frame(height: 28)
+                        .background(
+                            LinearGradient(colors: [Color.iceBlue, Color.iceBlue.opacity(0.8)], startPoint: .top, endPoint: .bottom)
+                        )
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .disabled(vm.selectedGame == nil)
+                    .opacity(vm.selectedGame == nil ? 0.35 : 1.0)
+                } else {
+                    Button(action: {
+                        vm.showingDatabaseSheet = true
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "books.vertical.fill")
+                            Text("Browse Supported Versions (72 Games)")
+                        }
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(Color.iceBlue)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+
+                    Spacer()
+
+                    Button("Return to Tuning") {
                         vm.activeTab = 0
                     }
                     .font(.system(size: 12, weight: .medium))
                     .buttonStyle(.plain)
-        .focusable(false)
-                    .foregroundColor(Color.iceBlue)
+                    .focusable(false)
+                    .foregroundColor(Color.white.opacity(0.65))
                 }
             }
             .padding(.horizontal, 18)
@@ -1035,6 +1310,9 @@ struct ContentView: View {
         .sheet(isPresented: $showingConfigSheet) {
             LiquidConfigViewerSheet(verification: vm.verification)
         }
+        .sheet(isPresented: $vm.showingDatabaseSheet) {
+            CompatibilityDatabaseSheet(games: vm.gamesDatabase, isPresented: $vm.showingDatabaseSheet)
+        }
     }
 }
 
@@ -1045,8 +1323,9 @@ struct LiquidSegmentedControl: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            segmentButton(title: "Configuration", icon: "slider.horizontal.3", index: 0)
-            segmentButton(title: "1-Click Port Installer", icon: "bolt.badge.automatic.fill", index: 1)
+            segmentButton(title: "Tuning", icon: "slider.horizontal.3", index: 0)
+            segmentButton(title: "Recipes & Patches", icon: "wand.and.stars", index: 1)
+            segmentButton(title: "1-Click Port", icon: "bolt.badge.automatic.fill", index: 2)
         }
         .padding(2.5)
         .background(Color.white.opacity(0.04))
@@ -1560,9 +1839,454 @@ struct LiquidGroupWell<Content: View>: View {
     }
 }
 
+// MARK: - Compatibility & Versions Database Sheet
+struct CompatibilityDatabaseSheet: View {
+    let games: [GameDbEntry]
+    @Binding var isPresented: Bool
+    @State private var search: String = ""
+
+    var filteredGames: [GameDbEntry] {
+        if search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return games
+        }
+        return games.filter {
+            $0.name.localizedCaseInsensitiveContains(search) ||
+            $0.titleId.localizedCaseInsensitiveContains(search) ||
+            $0.engine.localizedCaseInsensitiveContains(search)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header Bar
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("nxnative Compatibility & Version Database")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("72 Officially Tested Switch Titles • Verified Update Versions & Patch Status")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.white.opacity(0.55))
+                }
+                Spacer()
+                Button(action: { isPresented = false }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(Color.white.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+            .padding(18)
+            .background(.ultraThinMaterial)
+
+            Divider().opacity(0.12)
+
+            // Search Bar
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(Color.white.opacity(0.4))
+                TextField("Search by game name or Title ID (e.g. Zelda, 01007EF...)", text: $search)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white)
+                if !search.isEmpty {
+                    Button(action: { search = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(Color.white.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(10)
+            .background(Color.white.opacity(0.05))
+            .cornerRadius(8)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+
+            // List of Games
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(filteredGames) { g in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(g.name)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(.white)
+                                    Text("\(g.titleId) • \(g.engine)")
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(Color.white.opacity(0.5))
+                                }
+                                Spacer()
+                                // Verified Tag
+                                HStack(spacing: 4) {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .font(.system(size: 10))
+                                    Text("Update \(g.testedDisplayVersion) (\(g.testedFps) FPS)")
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                }
+                                .foregroundColor(Color.mintGreen)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.mintGreen.opacity(0.14))
+                                .cornerRadius(6)
+                            }
+
+                            // Unsupported Advice Box
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "info.circle")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Color.accentAmber)
+                                Text(g.unsupportedVersionsNote)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Color.white.opacity(0.7))
+                            }
+                            .padding(8)
+                            .background(Color.white.opacity(0.03))
+                            .cornerRadius(6)
+
+                            // Recipes Pill Summary
+                            HStack(spacing: 6) {
+                                Text("\(g.recipes.count) Recipes Available")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundColor(Color.iceBlue)
+                                if g.hasCustomPatches {
+                                    Text("• NSO Bytecode Cuts Included")
+                                        .font(.system(size: 9.5))
+                                        .foregroundColor(Color.mintGreen)
+                                }
+                            }
+                        }
+                        .padding(12)
+                        .background(Color.materialThinElevated)
+                        .cornerRadius(10)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(Color.hairlineSpecular, lineWidth: 0.5)
+                        )
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 20)
+            }
+        }
+        .frame(width: 620, height: 600)
+        .background(Color.obsidianBase)
+    }
+}
+
+// MARK: - Liquid Recipes & Patches View (macOS 27 Liquid Obsidian)
+struct LiquidRecipesView: View {
+    @ObservedObject var vm: LauncherViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+
+            // 1. GAME SHELF (Horizontal Coverflow)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("SELECT GAME FOR RECIPES")
+                        .font(.system(size: 11, weight: .medium))
+                        .tracking(0.66)
+                        .foregroundColor(Color.white.opacity(0.45))
+                    Spacer()
+                    Button(action: { vm.showingDatabaseSheet = true }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "books.vertical.fill")
+                            Text("Database (72 Games)")
+                        }
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.iceBlue)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                }
+
+                if vm.detectedGames.isEmpty {
+                    Text("No native Switch ports detected in /Applications or ~/Applications")
+                        .font(.system(size: 11.5))
+                        .foregroundColor(Color.white.opacity(0.35))
+                        .padding(.vertical, 12)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(vm.detectedGames) { game in
+                                LiquidGameShelfItem(
+                                    game: game,
+                                    isSelected: vm.selectedGameId == game.titleId
+                                ) {
+                                    vm.selectedGameId = game.titleId
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+
+            if let game = vm.selectedGame {
+                let dbEntry = vm.selectedGameDbEntry
+
+                // 2. ACTIVE GAME HERO CARD
+                HStack(spacing: 14) {
+                    GameIconView(game: game, size: 48)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text(game.title)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+
+                            if dbEntry?.hasCustomPatches == true {
+                                Text("NSO Patches")
+                                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                    .foregroundColor(Color.mintGreen)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.mintGreen.opacity(0.12))
+                                    .cornerRadius(4)
+                            }
+                        }
+
+                        HStack(spacing: 8) {
+                            Text(game.titleId)
+                                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                .foregroundColor(Color.white.opacity(0.65))
+
+                            if let eng = dbEntry?.engine {
+                                Text("• \(eng)")
+                                    .font(.system(size: 10.5))
+                                    .foregroundColor(Color.white.opacity(0.45))
+                            }
+                        }
+
+                        if let dispVer = dbEntry?.testedDisplayVersion, let fps = dbEntry?.testedFps {
+                            HStack(spacing: 4) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Color.mintGreen)
+                                Text("Tested & Verified on Update v\(dispVer) (\(fps) FPS)")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Color.mintGreen)
+                            }
+                            .padding(.top, 2)
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(14)
+                .background(Color.materialUltraThin)
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.hairlineSpecular, lineWidth: 0.5)
+                )
+
+                // 3. UNTESTED / VERSION ADVISORY
+                if let note = dbEntry?.unsupportedVersionsNote {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(Color.accentAmber)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("VERSION COMPATIBILITY ADVISORY")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .tracking(0.5)
+                                .foregroundColor(Color.accentAmber)
+                            Text(note)
+                                .font(.system(size: 10.5))
+                                .foregroundColor(Color.white.opacity(0.75))
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.accentAmber.opacity(0.08))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.accentAmber.opacity(0.25), lineWidth: 0.5)
+                    )
+                }
+
+                // 4. RECIPES LIST
+                LiquidGroupWell(title: "NATIVE ENGINE & GRAPHICS RECIPES", icon: "wand.and.stars") {
+                    VStack(spacing: 0) {
+                        // 1. 60 FPS Target & Interval Pacing
+                        recipeRow(
+                            title: "60 FPS Target & VFR Interval Pacing",
+                            badge: dbEntry?.hasCustomPatches == true ? "NSO CUT" : "HLE PACING",
+                            badgeColor: Color.mintGreen,
+                            description: "Enforces 60 FPS frame interval pacing. Synchronizes internal game ticks and removes 30 FPS console lock.",
+                            isOn: Binding(
+                                get: { vm.settings.fpsTarget == 60 },
+                                set: { enabled in
+                                    vm.settings.fpsTarget = enabled ? 60 : 30
+                                    vm.saveSettings()
+                                    vm.flashStatus("Recipe updated: 60 FPS Target")
+                                }
+                            )
+                        )
+
+                        Divider().opacity(0.12).padding(.vertical, 8)
+
+                        // 2. Apple MetalFX AI Upscaler
+                        recipeRow(
+                            title: "Apple MetalFX AI Spatial Scaler",
+                            badge: "NEURAL SCALER",
+                            badgeColor: Color.iceBlue,
+                            description: "Applies Apple Silicon neural spatial upscaling from internal resolution to native display with zero perceptible latency.",
+                            isOn: Binding(
+                                get: { vm.settings.metalFx },
+                                set: { enabled in
+                                    vm.settings.metalFx = enabled
+                                    vm.saveSettings()
+                                    vm.flashStatus("Recipe updated: MetalFX Scaler")
+                                }
+                            )
+                        )
+
+                        Divider().opacity(0.12).padding(.vertical, 8)
+
+                        // 3. Async Metal Pipeline Prewarm
+                        recipeRow(
+                            title: "Async Metal PSO Pipeline Compilation",
+                            badge: "METAL PIPELINE",
+                            badgeColor: Color.accentViolet,
+                            description: "Compiles Metal Shading Language pipeline state objects across background worker threads before presentation.",
+                            isOn: Binding(
+                                get: { vm.settings.asyncShaders },
+                                set: { enabled in
+                                    vm.settings.asyncShaders = enabled
+                                    vm.saveSettings()
+                                    vm.flashStatus("Recipe updated: Async Shaders")
+                                }
+                            )
+                        )
+
+                        Divider().opacity(0.12).padding(.vertical, 8)
+
+                        // 4. Docked Mode
+                        recipeRow(
+                            title: "Docked Console Mode (1080p Profile)",
+                            badge: "SYSTEM POWER",
+                            badgeColor: Color.accentAmber,
+                            description: "Forces Switch docked power profile for maximum texture quality, shadow resolution, and expanded draw distance.",
+                            isOn: Binding(
+                                get: { vm.settings.opMode == 1 },
+                                set: { enabled in
+                                    vm.settings.opMode = enabled ? 1 : 0
+                                    vm.saveSettings()
+                                    vm.flashStatus("Recipe updated: Console Mode")
+                                }
+                            )
+                        )
+
+                        Divider().opacity(0.12).padding(.vertical, 8)
+
+                        // 5. Anisotropic Filtering
+                        recipeRow(
+                            title: "16× Anisotropic Texture Filtering",
+                            badge: "TEXTURE SAMPLER",
+                            badgeColor: Color.iceBlue,
+                            description: "Forces 16× anisotropic sampling on all 3D surface and terrain textures, sharpening oblique angles.",
+                            isOn: Binding(
+                                get: { vm.settings.anisotropicFiltering >= 8 },
+                                set: { enabled in
+                                    vm.settings.anisotropicFiltering = enabled ? 16 : 1
+                                    vm.saveSettings()
+                                    vm.flashStatus("Recipe updated: Anisotropic Filtering")
+                                }
+                            )
+                        )
+
+                        Divider().opacity(0.12).padding(.vertical, 8)
+
+                        // 6. Present Snap GPU Pacing
+                        recipeRow(
+                            title: "Present Snap Frame Buffering",
+                            badge: "CLOCK GOVERNOR",
+                            badgeColor: Color.mintGreen,
+                            description: "Schedules present snapshots to prevent Apple Silicon GPU frequency drops on passively cooled Macs.",
+                            isOn: Binding(
+                                get: { vm.settings.presentSnap },
+                                set: { enabled in
+                                    vm.settings.presentSnap = enabled
+                                    vm.saveSettings()
+                                    vm.flashStatus("Recipe updated: Present Snap")
+                                }
+                            )
+                        )
+
+                        Divider().opacity(0.12).padding(.vertical, 8)
+
+                        // 7. Metal HUD
+                        recipeRow(
+                            title: "Apple Metal Performance HUD",
+                            badge: "TELEMETRY",
+                            badgeColor: Color.white.opacity(0.6),
+                            description: "Draws macOS Metal developer performance overlay with real-time frame time graphs, GPU core usage, and memory pressure.",
+                            isOn: Binding(
+                                get: { vm.settings.metalHud },
+                                set: { enabled in
+                                    vm.settings.metalHud = enabled
+                                    vm.saveSettings()
+                                    vm.flashStatus("Recipe updated: Metal HUD")
+                                }
+                            )
+                        )
+                    }
+                }
+
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 32))
+                        .foregroundColor(Color.white.opacity(0.2))
+                    Text("Select a game above to view and configure its available recipes and patches")
+                        .font(.system(size: 12))
+                        .foregroundColor(Color.white.opacity(0.4))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+            }
+        }
+        .padding(20)
+    }
+
+    private func recipeRow(title: String, badge: String, badgeColor: Color, description: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white)
+                    Text(badge)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(badgeColor)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(badgeColor.opacity(0.14))
+                        .cornerRadius(3)
+                }
+                Text(description)
+                    .font(.system(size: 10.5))
+                    .foregroundColor(Color.white.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(SwitchToggleStyle(tint: Color.mintGreen))
+                .focusable(false)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 // MARK: - Liquid 1-Click Port Installer View
 struct LiquidPortInstallerView: View {
     @ObservedObject var installerVm: PortInstallerViewModel
+    @ObservedObject var vm: LauncherViewModel
     let onInstalled: (String) -> Void
 
     @State private var showingLogs: Bool = true
@@ -1621,12 +2345,12 @@ struct LiquidPortInstallerView: View {
                         Spacer()
 
                         Button("Browse Base...") {
-                            installerVm.browseBaseNsp()
+                            installerVm.browseBaseNsp(db: vm.gamesDatabase)
                         }
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Color.iceBlue)
                         .buttonStyle(.plain)
-        .focusable(false)
+                        .focusable(false)
                     }
                     .padding(10)
                     .background(Color.materialThinElevated)
@@ -1656,12 +2380,12 @@ struct LiquidPortInstallerView: View {
                         Spacer()
 
                         Button("Browse Update...") {
-                            installerVm.browseUpdateNsp()
+                            installerVm.browseUpdateNsp(db: vm.gamesDatabase)
                         }
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(Color.mintGreen)
                         .buttonStyle(.plain)
-        .focusable(false)
+                        .focusable(false)
                     }
                     .padding(10)
                     .background(Color.materialThinElevated)
@@ -1682,10 +2406,145 @@ struct LiquidPortInstallerView: View {
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundColor(Color.accentAmber)
                         .buttonStyle(.plain)
-        .focusable(false)
+                        .focusable(false)
                     }
                 }
             }
+
+            // Package Compatibility Verifier Card
+            if let result = installerVm.verificationResult {
+                if result.status == "VERIFIED_SUPPORTED" {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(Color.mintGreen)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("VERIFIED COMPATIBLE RELEASE")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .tracking(0.5)
+                                    .foregroundColor(Color.mintGreen)
+                                Spacer()
+                                Text("60 FPS Patched")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(Color.mintGreen)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.mintGreen.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            Text("\(result.gameName) (Version \(result.detectedVersion))")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundColor(.white)
+                            Text("All game-specific 60 FPS patches, native MetalFX configurations, and shader tables are registered in nxnative.")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(Color.white.opacity(0.65))
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.mintGreen.opacity(0.08))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.mintGreen.opacity(0.35), lineWidth: 0.5)
+                    )
+                } else if result.status == "UNTESTED_VERSION" {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(Color.accentAmber)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("UNTESTED UPDATE VERSION")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .tracking(0.5)
+                                    .foregroundColor(Color.accentAmber)
+                                Spacer()
+                                Text("Provisional Mode")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(Color.accentAmber)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.accentAmber.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            Text("\(result.gameName) (Detected: v\(result.detectedVersion) | Officially Tested: v\(result.testedVersion))")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundColor(.white)
+                            Text(result.unsupportedNote ?? "Older or unlisted game versions lack registered shader pairs and 60 FPS patches. A derived provisional profile will be generated, but porting may or may not succeed.")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(Color.white.opacity(0.65))
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.accentAmber.opacity(0.08))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.accentAmber.opacity(0.35), lineWidth: 0.5)
+                    )
+                } else {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "questionmark.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(Color.iceBlue)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("UNTESTED GAME TITLE")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .tracking(0.5)
+                                    .foregroundColor(Color.iceBlue)
+                                Spacer()
+                                Text("Provisional Survey")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(Color.iceBlue)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.iceBlue.opacity(0.15))
+                                    .cornerRadius(4)
+                            }
+                            Text("Title ID: \(result.titleId)")
+                                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.white)
+                            Text("This title is not in the nxnative tested database. nxnative will run an automated survey and attempt a best-effort provisional port. Installation may or may not succeed.")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(Color.white.opacity(0.65))
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.iceBlue.opacity(0.08))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.iceBlue.opacity(0.35), lineWidth: 0.5)
+                    )
+                }
+            }
+
+            // Database Sheet Shortcut Button
+            Button(action: { vm.showingDatabaseSheet = true }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "books.vertical.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.iceBlue)
+                    Text("Browse All 72 Officially Supported Games & Tested Versions")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color.white.opacity(0.85))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.white.opacity(0.4))
+                }
+                .padding(10)
+                .background(Color.materialUltraThin)
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.hairlineSpecular, lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
 
             // Step 2: Keys
             LiquidGroupWell(title: "2. Decryption Keys", icon: "key") {

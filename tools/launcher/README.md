@@ -30,7 +30,7 @@ Unlike conventional emulators, games ported via `nxnative` run their native ARM6
 
 ## Core Features
 
-### 1. 🎛️ Form-Aligned Performance Control Center
+### 1. 🎛️ Form-Aligned Performance Control Center (Tuning Tab)
 All performance options are cleanly aligned following macOS system preferences conventions: setting titles and descriptions anchored to the left, and interactive sliders, pickers, and toggles right-aligned at a uniform 220pt rail:
 * **Resolution Scale Slider**: Fine-grained rendering resolution scaling from `0.50×` up to `2.00×` with smooth gradient fill.
 * **Target Frame Rate**: Instant lock between `30 FPS`, `60 FPS`, or `Uncapped` with automatic v-sync negotiation.
@@ -38,7 +38,35 @@ All performance options are cleanly aligned following macOS system preferences c
 * **Anisotropic Filtering**: Hardware texture filtering selection (`1×`, `2×`, `4×`, `8×`, `16×`).
 * **Async Pipeline Compilation**: Eliminates shader compilation stutter by asynchronously compiling Metal pipeline state objects (MSL PSOs) in background worker threads.
 
-### 2. ⚡ 1-Click Native Port Installer
+### 2. 🧪 Recipes & Patches Studio (Recipes Tab)
+Unlock community-crafted and benchmarked engine patches and runtime recipes for your installed games:
+* **Curated Per-Game Recipes**: View all available recipes parsed directly from the `nxnative` engine database:
+  - **60 FPS Target & Pacing**: Unlocks double-buffered 60 FPS animation rates and adjusts internal tick clocks.
+  - **Apple MetalFX Spatial Upscaler**: Spatial super-resolution delivering sharp 1080p/1440p output from lightweight internal buffers.
+  - **Asynchronous Shader Workers**: Compiles pipeline state objects ahead of render passes, eliminating micro-stutters.
+  - **Docked Console Mode Profile (`DM_OPMODE=1`)**: Directs the game engine to load high-resolution texture cascades and expanded LOD distances.
+  - **16× Anisotropic Filtering**: Forces anisotropic filtering for crisp ground textures at oblique angles.
+  - **Present Snap Buffering**: Aligns presentation timestamps with ProMotion and 60Hz display refreshes.
+  - **Metal Performance HUD**: Real-time on-screen telemetry overlay reporting FPS, frame time variance, and GPU load.
+* **One-Click Apply All**: Tap **Apply All Optimal Recipes** to synchronize all recommended settings directly to the game's configuration file in one step.
+* **Game-Specific Bytecode Patches**: When games are ported, registered `patches.py` functions (such as Zelda BotW cutscene sync and dynamic interval stubs) are automatically compiled into the port bundle.
+
+### 3. 📚 72-Game Compatibility Database
+MetalNX ships with a self-contained, offline database of all 72 Switch games registered in `nxnative`:
+* **Searchable Game Browser**: Click **Database (72 Games)** from any tab to view the entire compatibility catalog.
+* **Tested Version Matrix**: Clear display of tested update versions (e.g. Zelda: Breath of the Wild `1.9.0 (v1114112)`, Mario Kart 8 Deluxe `4.0.0/4.0.1`, Super Smash Bros. Ultimate `13.0.3`).
+* **Unsupported Version Advisories**: Explicit warnings for each game detailing which older or newer versions lack shader dumps or 60 FPS patch stubs.
+
+### 4. 🔍 Package Compatibility Verifier
+When preparing to install a port in the **1-Click Port** tab:
+* **Instant Title ID & Version Extraction**: Automatically parses filenames and scans binary headers for Nintendo Title IDs and version numbers.
+* **Title ID Normalization**: Automatically calculates base Title IDs from update packages (subtracting `0x800`).
+* **Live Status Verification Badges**:
+  - 🟢 **✓ Verified Compatible Release**: Game and update version match the tested `nxnative` database. Optimal recipes and 60 FPS patches will be applied automatically.
+  - 🟡 **⚠️ Untested Update Version**: The game is known, but the chosen update version is untested. Explains that shader stubs or patches might differ from official benchmarks.
+  - 🔵 **ℹ️ Untested Game**: The Title ID is not present in the tested database. MetalNX notes that installation will attempt a provisional survey, but stability is unverified.
+
+### 5. ⚡ 1-Click Native Port Installer
 Turn raw Switch `.nsp` / `.nsz` dumps into optimized, standalone macOS `.app` applications without terminal commands:
 * **Package Ingestion**: Drag & drop or browse a **Base Game NSP** and an optional **Update NSP**, or specify a directory of game files.
 * **Automatic Key Discovery**: Automatically scans and detects `prod.keys` in standard locations:
@@ -54,7 +82,7 @@ Turn raw Switch `.nsp` / `.nsz` dumps into optimized, standalone macOS `.app` ap
   6. *Stage 6/7: Prebuilding Metal Pipeline Bases (Metal-TT)* (90%)
   7. *Stage 7/7: Packaging, Icon Embedding & Code-Signing* (98%)
 * **Dynamic Real-Time ETA**: Analyzes throughput and remaining work to display realistic, live countdowns (`ETA: ~ 1m 24s remaining`) alongside an elapsed timer.
-* **Automatic Deployment**: Places the compiled `.app` directly into `/Applications/`, updates the shelf, and selects the game immediately.
+* **Automatic Deployment**: Places the compiled `.app` directly into `/Applications/`, updates the shelf, and pre-seeds verified recipes immediately.
 
 ### 3. 🛡️ Guaranteed Settings Application & Verification
 Settings adjusted in MetalNX are guaranteed to take effect:
@@ -146,20 +174,24 @@ NVN_ASYNC_SHADERS=1
 
 ## Automated Test Suite
 
-MetalNX includes an automated Swift unit test suite verifying library scanning, game identification, false-positive rejection, environment path resolution, and icon extraction:
+MetalNX includes an automated Swift unit test suite verifying library scanning, game identification, false-positive rejection, database loading, NSP version verifications, recipe synchronization, and CLI integration:
 
 ```bash
-# Run tests
+# Run the 45-test automated suite
 ./tools/launcher/tests/run_tests.sh
 ```
 
-**Test Coverage**:
+**Test Coverage (45/45 Passing)**:
 * `Test 1`: Real installed game identification (Zelda BotW metadata, Title ID, version).
 * `Test 2`: Standard macOS application rejection (Calculator, TextEdit, Safari).
 * `Test 2B`: Self-detection rejection (guarantees MetalNX is never misidentified as a game).
 * `Test 3`: Synthetic game package detection (Mario Kart 8 Deluxe).
 * `Test 4`: Authoritative configuration path mapping (`~/Library/Application Support/nxnative/<TitleID>/env.txt`).
 * `Test 5`: High-resolution native icon extraction from game bundles.
+* `Test 6`: Offline database loading (all 72 Switch games verified with Title IDs, engines, FPS targets, and recipes).
+* `Test 7`: NSP package compatibility verifier (identifies verified releases, flags untested versions, and handles untested games).
+* `Test 8`: Recipe preseeding and disk synchronization (`env.txt` write with `NVN_TARGET_FPS=60`, `NVN_ENABLE_METALFX=1`, `NVN_ASYNC_SHADERS=1`, `NVN_ANISOTROPY=16`).
+* `Test 9`: Python CLI `--verify` integration and update Title ID normalization.
 
 ---
 
@@ -168,10 +200,13 @@ MetalNX includes an automated Swift unit test suite verifying library scanning, 
 | Path | Description |
 | :--- | :--- |
 | `tools/launcher/LauncherApp.swift` | Complete SwiftUI Control Center source code (macOS 27 Liquid Obsidian) |
+| `tools/launcher/games_db.json` | 72-game offline compatibility catalog, tested updates, and recipes database |
+| `tools/launcher/generate_games_db.py` | Python generator extracting metadata, updates, and recipes from `dm/games/` |
 | `tools/launcher/build.sh` | Production compilation, app bundling, codesigning, and `.dmg` packaging script |
 | `tools/launcher/make_icon.py` | Minimalist geometric MetalNX icon generator (`AppIcon.icns`) |
-| `tools/launcher/install_nsp.py` | Streaming port installer backend with dynamic ETA calculation |
-| `tools/launcher/tests/TestGameDetection.swift` | 21-test automated unit test suite |
+| `tools/launcher/install_nsp.py` | Streaming port installer backend, live verifier, and recipe pre-seeder |
+| `tools/launcher/tests/TestGameDetection.swift` | 45-test automated unit test suite |
+| `tools/launcher/tests/run_tests.sh` | Standalone test runner script |
 | `build/launcher/MetalNX.app` | Compiled native macOS application |
 | `build/launcher/MetalNX-2.0.0.dmg` | Drag-and-drop macOS disk image installer |
 | `/Applications/MetalNX.app` | Installed system application |

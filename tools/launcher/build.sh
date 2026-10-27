@@ -18,6 +18,9 @@ mkdir -p "$BUILD_DIR"
 echo "-> Generating minimal MetalNX application icon..."
 python3 "$DIR/make_icon.py"
 
+echo "-> Compiling nxnative 72-game compatibility & recipe database..."
+python3 "$DIR/generate_games_db.py"
+
 echo "-> Compiling Swift binary with optimizations..."
 swiftc -parse-as-library -O \
     -target arm64-apple-macos13.0 \
@@ -38,6 +41,9 @@ chmod +x "$APP_BUNDLE/Contents/Resources/install_nsp.py"
 
 # Copy application icon
 cp "$DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
+# Copy game compatibility and recipes database
+cp "$DIR/games_db.json" "$APP_BUNDLE/Contents/Resources/games_db.json"
 
 # Write Info.plist
 cat << EOF > "$APP_BUNDLE/Contents/Info.plist"
