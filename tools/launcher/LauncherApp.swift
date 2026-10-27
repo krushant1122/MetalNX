@@ -1113,6 +1113,28 @@ struct ContentView: View {
                 }
 
                 Button(action: {
+                    vm.showingDatabaseSheet = true
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "books.vertical.fill")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Database (72)")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(Color.iceBlue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.materialThinElevated)
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.hairlineSpecular, lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+
+                Button(action: {
                     showingPermissionSheet = true
                 }) {
                     Image(systemName: "lock.shield")
@@ -1120,7 +1142,7 @@ struct ContentView: View {
                         .foregroundColor(Color.white.opacity(0.7))
                 }
                 .buttonStyle(.plain)
-        .focusable(false)
+                .focusable(false)
                 .padding(6)
                 .background(Color.materialThinElevated)
                 .cornerRadius(6)
@@ -1397,6 +1419,17 @@ struct LiquidLibraryTweakerView: View {
                     }
                     .buttonStyle(.plain)
         .focusable(false)
+
+                    Button(action: { vm.showingDatabaseSheet = true }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "books.vertical.fill")
+                            Text("Database (72)")
+                        }
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.mintGreen)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
 
                     Button(action: { vm.addCustomGame() }) {
                         HStack(spacing: 3) {
