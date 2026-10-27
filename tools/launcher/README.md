@@ -4,6 +4,14 @@
 
 Unlike conventional emulators, games ported via `nxnative` run their native ARM64 CPU instructions directly on Apple Silicon cores with graphics translated directly to Apple Metal. **MetalNX** is the central graphical dashboard to manage your native game library, tune MetalFX AI spatial upscaling, customize per-game performance targets, and install new ports in a single click.
 
+<p align="center">
+  <img src="docs/screenshots/02_recipes_and_patches.png" width="48%" alt="MetalNX Recipes & Patches Studio" />
+  <img src="docs/screenshots/01_tuning_control_center.png" width="48%" alt="MetalNX Tuning Control Center" />
+</p>
+<p align="center">
+  <img src="docs/screenshots/03_one_click_port_installer.png" width="97%" alt="MetalNX 1-Click Port Studio" />
+</p>
+
 ---
 
 ## Architecture & Visual Identity
