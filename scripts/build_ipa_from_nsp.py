@@ -393,6 +393,10 @@ def build_nx_extract(repo, work, logs, env):
     """Build nx_extract into <work>/tools/nx_extract/. It is built in a temporary folder and copied over: with an apostrophe in the output path (e.g. "Bowser's Fury") MSBuild's conditions break,
     LibHac.dll and the executable are not copied, and the build still reports success"""
     nx = work / 'tools/nx_extract/nx_extract'
+    # Wipe any stale or framework-dependent binary from previous failed runs
+    if nx.is_file() and nx.stat().st_size < 50_000_000:
+        rmtree(nx)
+
     prebuilt = find_prebuilt_nx_extract(repo)
     if prebuilt:
         nx.parent.mkdir(parents=True, exist_ok=True)

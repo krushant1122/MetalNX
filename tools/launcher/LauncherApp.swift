@@ -604,12 +604,7 @@ class PortInstallerViewModel: ObservableObject {
         process.arguments = args
 
         var env = ProcessInfo.processInfo.environment
-        let dotnetDir = "\(home)/.dotnet"
-        if FileManager.default.fileExists(atPath: dotnetDir) {
-            env["DOTNET_ROOT"] = dotnetDir
-            env["DOTNET_ROOT_ARM64"] = dotnetDir
-            env["PATH"] = "\(dotnetDir):/usr/local/bin:/usr/bin:/bin:\(env["PATH"] ?? "")"
-        }
+        env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:\(env["PATH"] ?? "")"
         process.environment = env
 
         let pipe = Pipe()

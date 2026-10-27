@@ -529,20 +529,11 @@ def main():
     env["PATH"] = ":".join(current_paths)
     os.environ["PATH"] = env["PATH"]
 
-    dotnet_candidates = [
-        Path(home) / ".dotnet",
-        Path("/usr/local/share/dotnet"),
-        Path("/opt/homebrew/opt/dotnet"),
-    ]
-    for dnet in dotnet_candidates:
-        if dnet.is_dir():
-            env["DOTNET_ROOT"] = str(dnet)
-            env["DOTNET_ROOT_ARM64"] = str(dnet)
-            env["PATH"] = f"{dnet}:{env.get('PATH', '')}"
-            os.environ["DOTNET_ROOT"] = str(dnet)
-            os.environ["DOTNET_ROOT_ARM64"] = str(dnet)
-            os.environ["PATH"] = f"{dnet}:{os.environ.get('PATH', '')}"
-            break
+    # Purge any partial/broken external DOTNET_ROOT variables to enforce standalone binary
+    env.pop("DOTNET_ROOT", None)
+    env.pop("DOTNET_ROOT_ARM64", None)
+    os.environ.pop("DOTNET_ROOT", None)
+    os.environ.pop("DOTNET_ROOT_ARM64", None)
 
     # Check clang / Xcode Command Line Tools
     if not shutil.which("clang"):
@@ -553,6 +544,36 @@ def main():
     if not repo_root:
         emit("ERROR", 0.0, "Configuration", "Could not locate or download MetalNX engine. Please clone https://github.com/krushant1122/MetalNX to ~/nxnative or set NXNATIVE_ROOT.")
         sys.exit(1)
+
+    # Synchronize latest bundled scripts into engine root so cached repos are always up to date
+    bundled_scripts_dir = HERE / "scripts"
+    if bundled_scripts_dir.is_dir():
+        for sf in bundled_scripts_dir.glob("*.py"):
+            try:
+                (repo_root / "scripts").mkdir(parents=True, exist_ok=True)
+                shutil.copy2(sf, repo_root / "scripts" / sf.name)
+            except Exception:
+                pass
+
+    # Ensure standalone nx_extract is placed in ~/.switch/nx_extract
+    bundled_nx = HERE / "nx_extract"
+    if bundled_nx.is_file() and bundled_nx.stat().st_size > 50_000_000:
+        switch_dir = Path.home() / ".switch"
+        try:
+            switch_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundled_nx, switch_dir / "nx_extract")
+            os.chmod(switch_dir / "nx_extract", 0o755)
+        except Exception:
+            pass
+
+    # Purge any stale framework-dependent binaries from previous runs in the game build directory
+    for work_dir in nsp_dir.glob("*_build"):
+        cached_nx = work_dir / "tools/nx_extract/nx_extract"
+        if cached_nx.is_file() and cached_nx.stat().st_size < 50_000_000:
+            try:
+                cached_nx.unlink()
+            except Exception:
+                pass
 
     ensure_nx_extract(repo_root)
 

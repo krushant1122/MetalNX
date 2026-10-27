@@ -10,7 +10,7 @@ BUILD_DIR="$REPO_ROOT/build/launcher"
 APP_NAME="MetalNX.app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME"
 INSTALL_DIR="/Applications/$APP_NAME"
-VERSION="2.0.3"
+VERSION="2.0.4"
 
 echo "=== Building MetalNX Control Center v$VERSION ==="
 mkdir -p "$BUILD_DIR"
@@ -44,6 +44,11 @@ cp "$DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 # Copy game compatibility and recipes database
 cp "$DIR/games_db.json" "$APP_BUNDLE/Contents/Resources/games_db.json"
+
+# Bundle engine scripts so the app always carries the latest build pipeline
+echo "-> Bundling latest engine scripts..."
+mkdir -p "$APP_BUNDLE/Contents/Resources/scripts"
+cp -R "$REPO_ROOT/scripts/"* "$APP_BUNDLE/Contents/Resources/scripts/"
 
 # Bundle self-contained nx_extract if built (zero .NET runtime required by user)
 if [ -f "$REPO_ROOT/tools/bin/nx_extract" ]; then
