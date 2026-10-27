@@ -75,6 +75,18 @@ def ensure_nx_extract(repo_root):
         repo_root / "tools/nx_extract/nx_extract",
         Path.home() / ".switch/nx_extract",
     ]
+    # Check for self-contained binary (> 50MB) and overwrite stale framework-dependent ones
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK) and c.stat().st_size > 50_000_000:
+            target = Path.home() / ".switch/nx_extract"
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.is_file() or target.stat().st_size < 50_000_000:
+                    shutil.copy2(c, target)
+            except Exception:
+                pass
+            return c
+
     for c in candidates:
         if c.is_file() and os.access(c, os.X_OK):
             target = Path.home() / ".switch/nx_extract"

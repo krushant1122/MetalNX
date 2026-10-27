@@ -374,6 +374,10 @@ def find_prebuilt_nx_extract(repo=None):
         repo / 'tools/nx_extract/nx_extract',
         Path.home() / '.switch/nx_extract',
     ]
+    # Prefer self-contained binaries (> 50MB) over framework-dependent ones to avoid .NET runtime exit code 134
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK) and c.stat().st_size > 50_000_000:
+            return c
     for c in candidates:
         if c.is_file() and os.access(c, os.X_OK):
             return c
