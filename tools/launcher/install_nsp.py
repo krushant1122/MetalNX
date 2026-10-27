@@ -285,11 +285,12 @@ def main():
 
     if args.folder and Path(args.folder).is_dir():
         nsp_dir = Path(args.folder).resolve()
-        for f in nsp_dir.glob("*.ns*"):
-            total_bytes += f.stat().st_size
-            if not primary_title_id:
-                _, b_tid, _, _ = extract_title_and_version(f)
-                primary_title_id = b_tid
+        for ext in ["*.nsp", "*.nsz", "*.xci", "*.xcz"]:
+            for f in nsp_dir.glob(ext):
+                total_bytes += f.stat().st_size
+                if not primary_title_id:
+                    _, b_tid, _, _ = extract_title_and_version(f)
+                    primary_title_id = b_tid
     elif args.base and Path(args.base).is_file():
         cache_base = Path.home() / "Library/Caches/nxnative"
         cache_base.mkdir(parents=True, exist_ok=True)

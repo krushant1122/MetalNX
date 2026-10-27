@@ -380,6 +380,11 @@ let resC = verifyTestPackage(path: unknownGamePath, db: db)
 assertEqual(resC.status, "UNTESTED_GAME", "Unknown Title ID classified as UNTESTED_GAME")
 assertTrue(!resC.isSupported, "Untested game flagged as unverified")
 
+// Subtest 7D: XCI Cartridge Dump Package
+let xciPath = "/Volumes/Backup/Monster Hunter Rise [0100559011740000][v0].xci"
+let resD = verifyTestPackage(path: xciPath, db: db)
+assertTrue(resD.titleId == "0100559011740000", "XCI cartridge dump Title ID extracted correctly")
+
 // Test 8: Recipe env.txt Preseeding Verification
 print("\n--- Test 8: Recipe Preseeding & Synchronization ---")
 let testEnvDir = NSTemporaryDirectory() + "nxnative_recipe_test"

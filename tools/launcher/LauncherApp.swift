@@ -428,9 +428,11 @@ class PortInstallerViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [
             UTType(filenameExtension: "nsp") ?? .data,
-            UTType(filenameExtension: "nsz") ?? .data
+            UTType(filenameExtension: "xci") ?? .data,
+            UTType(filenameExtension: "nsz") ?? .data,
+            UTType(filenameExtension: "xcz") ?? .data
         ]
-        panel.prompt = "Select Base Game NSP"
+        panel.prompt = "Select Base Game Package (NSP / XCI / NSZ / XCZ)"
 
         if panel.runModal() == .OK, let url = panel.url {
             baseNspPath = url.path
@@ -448,9 +450,11 @@ class PortInstallerViewModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [
             UTType(filenameExtension: "nsp") ?? .data,
-            UTType(filenameExtension: "nsz") ?? .data
+            UTType(filenameExtension: "xci") ?? .data,
+            UTType(filenameExtension: "nsz") ?? .data,
+            UTType(filenameExtension: "xcz") ?? .data
         ]
-        panel.prompt = "Select Update NSP (Optional)"
+        panel.prompt = "Select Update Package (Optional)"
 
         if panel.runModal() == .OK, let url = panel.url {
             updateNspPath = url.path
@@ -2395,7 +2399,7 @@ struct LiquidPortInstallerView: View {
             )
 
             // Step 1: Package Selection (Dashed Inset Wells)
-            LiquidGroupWell(title: "1. Switch Package Dumps (.nsp / .nsz)", icon: "shippingbox") {
+            LiquidGroupWell(title: "1. Switch Package Dumps (.nsp / .xci / .nsz / .xcz)", icon: "shippingbox") {
                 VStack(alignment: .leading, spacing: 10) {
                     // Base File
                     HStack {
@@ -2404,7 +2408,7 @@ struct LiquidPortInstallerView: View {
                             .foregroundColor(Color.iceBlue)
 
                         if installerVm.baseNspPath.isEmpty {
-                            Text("Base Game NSP/NSZ (Required)")
+                            Text("Base Game Package (.nsp / .xci / .nsz / .xcz)")
                                 .font(.system(size: 11))
                                 .foregroundColor(Color.white.opacity(0.35))
                         } else {
