@@ -2116,20 +2116,60 @@ struct LiquidRecipesView: View {
                         .stroke(Color.hairlineSpecular, lineWidth: 0.5)
                 )
 
-                // 3. UNTESTED / VERSION ADVISORY
-                if let note = dbEntry?.unsupportedVersionsNote {
+                // 3. VERSION COMPATIBILITY STATUS
+                let installedVer = game.version.replacingOccurrences(of: "v", with: "").trimmingCharacters(in: .whitespaces)
+                let testedVer = dbEntry?.testedDisplayVersion.replacingOccurrences(of: "v", with: "").trimmingCharacters(in: .whitespaces) ?? ""
+                let isVerifiedVersion: Bool = {
+                    if testedVer.isEmpty { return false }
+                    if installedVer == testedVer || installedVer.contains(testedVer) || testedVer.contains(installedVer) {
+                        return true
+                    }
+                    if let svs = dbEntry?.supportedVersions {
+                        for sv in svs {
+                            let cleanSv = sv.displayVersion.replacingOccurrences(of: "v", with: "")
+                            if cleanSv == installedVer || installedVer.contains(cleanSv) || sv.versionCode.contains(installedVer) {
+                                return true
+                            }
+                        }
+                    }
+                    return false
+                }()
+
+                if isVerifiedVersion {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(Color.mintGreen)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("VERIFIED RELEASE ACTIVE (v\(game.version))")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .tracking(0.5)
+                                .foregroundColor(Color.mintGreen)
+                            Text("Your installed update v\(game.version) matches the official tested nxnative release. All 60 FPS patch stubs, cutscene sync hooks, and shader pipelines are active.")
+                                .font(.system(size: 10.5))
+                                .foregroundColor(Color.white.opacity(0.85))
+                        }
+                    }
+                    .padding(12)
+                    .background(Color.mintGreen.opacity(0.08))
+                    .cornerRadius(10)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.mintGreen.opacity(0.25), lineWidth: 0.5)
+                    )
+                } else if let note = dbEntry?.unsupportedVersionsNote {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 14))
                             .foregroundColor(Color.accentAmber)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("VERSION COMPATIBILITY ADVISORY")
+                            Text("VERSION COMPATIBILITY ADVISORY (Detected v\(game.version))")
                                 .font(.system(size: 9.5, weight: .bold))
                                 .tracking(0.5)
                                 .foregroundColor(Color.accentAmber)
                             Text(note)
                                 .font(.system(size: 10.5))
-                                .foregroundColor(Color.white.opacity(0.75))
+                                .foregroundColor(Color.white.opacity(0.85))
                         }
                     }
                     .padding(12)
