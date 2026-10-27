@@ -471,23 +471,40 @@ def free_gb(p):
 
 # ---- NSP identification ----
 def pfs0_names(path):   # NSP = PFS0: list the file names inside
-    with open(path, 'rb') as f:
-        h = f.read(16)
-        if h[:4] != b'PFS0': return []
-        n, st = struct.unpack_from('<II', h, 4)
-        ent, strs = f.read(n * 0x18), f.read(st)
-    return [strs[o:strs.index(b'\0', o)].decode(errors='replace') for o in (struct.unpack_from('<I', ent, i * 0x18 + 0x10)[0] for i in range(n))]
+    try:
+        with open(path, 'rb') as f:
+            h = f.read(16)
+            if h[:4] != b'PFS0': return []
+            n, st = struct.unpack_from('<II', h, 4)
+            ent, strs = f.read(n * 0x18), f.read(st)
+        return [strs[o:strs.index(b'\0', o)].decode(errors='replace') for o in (struct.unpack_from('<I', ent, i * 0x18 + 0x10)[0] for i in range(n))]
+    except OSError:
+        return []
 
 
 def title_of(path):   # the ticket name (the first 16 digits of the rights ID = title ID), else [title ID] in the file name
-    for n in pfs0_names(path):   # the ticket first: a file name's tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)
-        if re.match(r'[0-9A-Fa-f]{32}\.tik$', n): return int(n[:16], 16)
+    # 1. Check filename tags first (instant and handles symlinks/pre-staged files)
     m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
-    return int(m.group(1), 16) if m else None
+    if m: return int(m.group(1), 16)
+    m = re.search(r'\(([0-9A-Fa-f]{16})\)', path.name)
+    if m: return int(m.group(1), 16)
+    m = re.search(r'\b(0100[0-9A-Fa-f]{12})\b', path.name, re.I)
+    if m: return int(m.group(1), 16)
+
+    # 2. Inspect PFS0 content (ticket or CNMT NCA)
+    names = pfs0_names(path)
+    for n in names:   # the ticket first: a file name's tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)
+        if re.match(r'[0-9A-Fa-f]{32}\.tik$', n): return int(n[:16], 16)
+    for n in names:   # then CNMT NCA in PFS0 (e.g. 010015100b7c4000.cnmt.nca)
+        m = re.search(r'(0100[0-9A-Fa-f]{12})', n, re.I)
+        if m: return int(m.group(1), 16)
+    return None
 
 
 def version_of(path):
     m = re.search(r'\[v(\d+)\]', path.name)
+    if m: return int(m.group(1))
+    m = re.search(r'v(\d+)', path.name, re.I)
     return int(m.group(1)) if m else None
 
 

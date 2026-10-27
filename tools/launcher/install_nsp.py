@@ -568,10 +568,13 @@ def main():
 
         base_p = Path(args.base)
         total_bytes += base_p.stat().st_size
-        _, b_tid, _, _ = extract_title_and_version(base_p)
+        raw_b_tid, b_tid, _, b_ver = extract_title_and_version(base_p)
         primary_title_id = b_tid
 
-        base_target = nsp_dir / base_p.name
+        staged_base_name = base_p.name
+        if b_tid and f"[{b_tid}]" not in base_p.name:
+            staged_base_name = f"{base_p.stem} [{b_tid}][v{b_ver}]{base_p.suffix}"
+        base_target = nsp_dir / staged_base_name
         try:
             os.symlink(os.path.abspath(args.base), base_target)
         except OSError:
@@ -580,7 +583,12 @@ def main():
         if args.update and Path(args.update).is_file():
             upd_p = Path(args.update)
             total_bytes += upd_p.stat().st_size
-            update_target = nsp_dir / upd_p.name
+            raw_u_tid, _, _, u_ver = extract_title_and_version(upd_p)
+            tag_tid = raw_u_tid or (f"{int(b_tid, 16) + 0x800:016X}" if b_tid else None)
+            staged_upd_name = upd_p.name
+            if tag_tid and f"[{tag_tid}]" not in upd_p.name:
+                staged_upd_name = f"{upd_p.stem} [{tag_tid}][v{u_ver}]{upd_p.suffix}"
+            update_target = nsp_dir / staged_upd_name
             try:
                 os.symlink(os.path.abspath(args.update), update_target)
             except OSError:

@@ -723,7 +723,7 @@ class PortInstallerViewModel: ObservableObject {
         return """
 ### MetalNX Port Diagnostic & Crash Report
 - **Date**: \(dateStr)
-- **App Version**: MetalNX v2.0.9
+- **App Version**: MetalNX v2.1.0
 - **OS**: macOS \(osVersion)
 - **Hardware**: \(chipName) (\(memGB) RAM)
 - **Game**: \(targetGame) (`\(titleId)`)
@@ -771,15 +771,17 @@ class PortInstallerViewModel: ObservableObject {
 
         let targetGame = verificationResult?.gameName ?? "Game"
         let title = "[Port Failure] \(targetGame) - \(currentStage): \(errorMsg.prefix(50))"
-        let titleEncoded = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Port Failure"
+        var queryParamAllowed = CharacterSet.alphanumerics
+        queryParamAllowed.insert(charactersIn: "-._~")
+        let titleEncoded = title.addingPercentEncoding(withAllowedCharacters: queryParamAllowed) ?? "Port Failure"
 
         // Keep URL safe across web browser URL length limits
         var body = report
-        if body.count > 3500 {
-            let truncatedLogs = consoleLogs.suffix(25).joined(separator: "\n")
+        if body.count > 3000 {
+            let truncatedLogs = consoleLogs.suffix(20).joined(separator: "\n")
             body = """
 ### MetalNX Port Diagnostic & Crash Report
-- **App Version**: MetalNX v2.0.9
+- **App Version**: MetalNX v2.1.0
 - **Game**: \(verificationResult?.gameName ?? "Unknown") (`\(verificationResult?.titleId ?? "")`)
 - **Failing Stage**: \(currentStage)
 - **Failure Reason**: \(errorMsg)
@@ -792,7 +794,7 @@ class PortInstallerViewModel: ObservableObject {
 *(Note: The full 60-line unclipped telemetry report has already been copied to your clipboard! Paste directly into this issue description).*
 """
         }
-        let bodyEncoded = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let bodyEncoded = body.addingPercentEncoding(withAllowedCharacters: queryParamAllowed) ?? ""
         let issueUrlStr = "https://github.com/krushant1122/MetalNX/issues/new?title=\(titleEncoded)&body=\(bodyEncoded)&labels=bug,port-failure"
         if let url = URL(string: issueUrlStr) {
             NSWorkspace.shared.open(url)

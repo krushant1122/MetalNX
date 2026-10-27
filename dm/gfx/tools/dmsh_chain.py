@@ -15,6 +15,19 @@
 import os, sys, hashlib, subprocess
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HERE = os.path.dirname(os.path.abspath(__file__)); GFX = os.path.dirname(HERE); HOME = os.path.expanduser('~')
+TOOL_PATHS = [
+    '/Applications/MetalNX.app/Contents/Resources/bin',
+    '/Applications/MetalNX.app/Contents/Resources',
+    os.path.expanduser('~/.switch'),
+    os.path.join(os.path.dirname(os.path.dirname(GFX)), 'tools/launcher/bin'),
+    os.path.join(os.path.dirname(os.path.dirname(GFX)), 'tools/bin'),
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+]
+for _tp in TOOL_PATHS:
+    if os.path.isdir(_tp) and _tp not in os.environ.get('PATH', '').split(':'):
+        os.environ['PATH'] = f"{_tp}:{os.environ.get('PATH', '')}"
 FILES = ['tools/dmsh_chain.py', 'tools/dmsh_build.py', 'tools/dmsh_atomic.py', 'tools/dmsh_fetch.py', 'tools/dmsh_vin.py', 'tools/dmsh_pull.py', 'tools/dmsh_pull.metal', 'tools/dmsh_geometry.py', 'tools/dmsh_facts.py', 'tools/dmsh_xlate/Program.cs', 'tools/dmsh_xlate/dmsh_xlate.csproj', '../ios/tools/ios_metal.py', 'tools/dmsh_chain.lock']
 # This target-specific lowering lives in the vendored translator. Include its
 # sources as well as the rebuilt DLL fingerprint; no old shader cache can bypass it.
