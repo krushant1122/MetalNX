@@ -28,7 +28,7 @@
 #   are built through dm/gfx/tools/own_compilers.py, which says so in one line and leaves the lock and the chain version as they are.
 # The Python running this file needs lz4, capstone and fonttools (and backports.zstd before Python 3.14); also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. A first run takes 2 (Metroid Dread) to 10 minutes (Breath of the Wild: 5 of them the shader split), longer when shader libraries must be compiled; a repeat run with unchanged inputs takes about 20 s (Metroid Dread), mostly packing the IPA. Key values are never printed.
 # The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress). --progress json writes newline-delimited JSON events to stdout.
-import ast, collections, ctypes, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zlib
+import ast, collections, ctypes, getpass, hashlib, importlib.util, json, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zipfile, zlib
 from pathlib import Path
 
 # ---- Settings ----
@@ -64,6 +64,14 @@ HEAP_CHECK_NNMAIN_SECS = 5
 PROGRESS = 'auto'                       # stage lines on the console: 'bar' (one line per stage, redrawn in place), 'lines' (a plain line every BEAT seconds), 'off' (only each stage's start and end); 'auto' = bar in a terminal or Spyder, lines when the output goes to a file; 'json' = one JSON event per line, for a program that shows the build
 BEAT = 30                               # seconds between progress lines in 'lines' mode
 TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/local/share/dotnet', os.path.expanduser('~/.dotnet')]   # GUI apps such as Spyder do not get the shell's PATH
+
+for _d in [Path.home() / '.dotnet', Path('/usr/local/share/dotnet'), Path('/opt/homebrew/opt/dotnet')]:
+    if (_d / 'dotnet').exists() or _d.is_dir():
+        os.environ.setdefault('DOTNET_ROOT', str(_d))
+        os.environ.setdefault('DOTNET_ROOT_ARM64', str(_d))
+        if str(_d) not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = f"{_d}:{os.environ.get('PATH', '')}"
+        break
 
 
 class BuildError(Exception):
@@ -1718,6 +1726,21 @@ def main(args=None):
     if args.xcode_workspace and not prepare_xcode: raise BuildError('--xcode-workspace requires --prepare-xcode')
     nsp_dir = Path(os.path.expanduser(args.nsp_dir or NSP_DIR or ask('NSP folder: ', 'the NSP folder'))).resolve()
     keys = Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
+    if keys.is_file() and (str(keys).lower().endswith('.zip') or zipfile.is_zipfile(keys)):
+        target_dir = Path.home() / '.switch'
+        target_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with zipfile.ZipFile(keys, 'r') as zf:
+                for item in zf.namelist():
+                    name = Path(item).name
+                    if name.lower() in ('prod.keys', 'title.keys'):
+                        out_path = target_dir / name.lower()
+                        with zf.open(item) as src, open(out_path, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
+            if (target_dir / 'prod.keys').is_file():
+                keys = (target_dir / 'prod.keys').resolve()
+        except Exception:
+            pass
     if not nsp_dir.is_dir(): raise BuildError(f'not a folder: {nsp_dir}')
     if not keys.is_file(): raise BuildError(f'no such file: {keys}')
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles

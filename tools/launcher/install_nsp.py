@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -115,6 +116,26 @@ def emit(status, progress=0.0, stage="", message="", eta_sec=None, elapsed_sec=0
     print(json.dumps(data), flush=True)
 
 
+def extract_keys_from_zip(zip_path, target_dir=None):
+    if target_dir is None:
+        target_dir = Path.home() / ".switch"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            for item in zf.namelist():
+                name = Path(item).name
+                if name.lower() in ("prod.keys", "title.keys"):
+                    out_path = target_dir / name.lower()
+                    with zf.open(item) as src, open(out_path, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        prod = target_dir / "prod.keys"
+        if prod.is_file() and prod.stat().st_size > 0:
+            return prod
+    except Exception:
+        pass
+    return None
+
+
 def find_default_keys():
     home = Path.home()
     candidates = [
@@ -123,8 +144,20 @@ def find_default_keys():
         home / "Library/Application Support/yuzu/keys/prod.keys",
     ]
     for c in candidates:
-        if c.is_file():
+        if c.is_file() and c.stat().st_size > 0:
             return c
+
+    # Also search for zip files containing prod.keys
+    for search_dir in [home / ".switch", home / "Downloads"]:
+        if search_dir.is_dir():
+            for zf in search_dir.glob("*.zip"):
+                try:
+                    if "key" in zf.name.lower():
+                        res = extract_keys_from_zip(zf)
+                        if res and res.is_file():
+                            return res
+                except Exception:
+                    pass
     return None
 
 
@@ -157,7 +190,8 @@ def extract_title_and_version(file_path):
 
     # Version extraction
     ver_m = re.search(r"\[v([0-9.]+)\]|v([0-9]+\.[0-9]+(?:\.[0-9]+)*)", name, re.I)
-    ver = (ver_m.group(1) or ver_m.group(2)) if ver_m else "v0"
+    ver = (ver_m.group(1) or ver_m.group(2)) if ver_m else "0"
+    ver = ver.lstrip("vV")
 
     return raw_tid, base_tid, is_update, ver
 
@@ -271,7 +305,12 @@ def main():
     start_time = time.time()
 
     # 1. Determine Keys
-    keys_path = Path(args.keys) if args.keys else find_default_keys()
+    keys_input = Path(args.keys) if args.keys else find_default_keys()
+    if keys_input and keys_input.is_file() and (str(keys_input).lower().endswith(".zip") or zipfile.is_zipfile(keys_input)):
+        keys_path = extract_keys_from_zip(keys_input) or keys_input
+    else:
+        keys_path = keys_input
+
     if not keys_path or not keys_path.is_file():
         emit("ERROR", 0.0, "Initialization", "prod.keys not found! Place prod.keys in ~/.switch/prod.keys or select it manually.")
         sys.exit(1)
@@ -345,11 +384,20 @@ def main():
     # 3. Setup Environment
     env = os.environ.copy()
     home = str(Path.home())
-    dotnet_dir = Path(home) / ".dotnet"
-    if dotnet_dir.is_dir():
-        env["DOTNET_ROOT"] = str(dotnet_dir)
-        env["DOTNET_ROOT_ARM64"] = str(dotnet_dir)
-        env["PATH"] = f"{dotnet_dir}:{env.get('PATH', '')}"
+    dotnet_candidates = [
+        Path(home) / ".dotnet",
+        Path("/usr/local/share/dotnet"),
+        Path("/opt/homebrew/opt/dotnet"),
+    ]
+    for dnet in dotnet_candidates:
+        if dnet.is_dir():
+            env["DOTNET_ROOT"] = str(dnet)
+            env["DOTNET_ROOT_ARM64"] = str(dnet)
+            env["PATH"] = f"{dnet}:{env.get('PATH', '')}"
+            os.environ["DOTNET_ROOT"] = str(dnet)
+            os.environ["DOTNET_ROOT_ARM64"] = str(dnet)
+            os.environ["PATH"] = f"{dnet}:{os.environ.get('PATH', '')}"
+            break
 
     # Check clang / Xcode Command Line Tools
     if not shutil.which("clang"):
@@ -383,7 +431,7 @@ def main():
         (re.compile(r"shader split|mac shaders|shader", re.I), 0.68, "Stage 4/7: Translating Maxwell Shaders to Metal"),
         (re.compile(r"mac host|dmhost", re.I), 0.80, "Stage 5/7: Compiling Native macOS Host Shell"),
         (re.compile(r"pipeline prebuild|pipeline archive|metal-tt", re.I), 0.90, "Stage 6/7: Prebuilding Metal Pipeline Bases"),
-        (re.compile(r"mac app|pack|signing", re.I), 0.96, "Stage 7/7: Packaging Standalone App & Embedding Icon"),
+        (re.compile(r"\b(?:mac-app|pack_app|pack app)\b|step: (?:mac app|signing)", re.I), 0.96, "Stage 7/7: Packaging Standalone App & Embedding Icon"),
     ]
 
     current_progress = 0.08

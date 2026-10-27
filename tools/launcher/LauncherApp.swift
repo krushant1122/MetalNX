@@ -137,11 +137,11 @@ func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
         baseTid = String(repeating: "0", count: max(0, 16 - hex.count)) + hex
     }
 
-    var ver = "v0"
+    var ver = "0"
     if let match = fname.range(of: "\\[v([0-9.]+)\\]", options: .regularExpression) {
-        ver = String(fname[match]).replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+        ver = String(fname[match]).replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "").replacingOccurrences(of: "v", with: "").replacingOccurrences(of: "V", with: "")
     } else if let match = fname.range(of: "v([0-9]+\\.[0-9]+(?:\\.[0-9]+)*)", options: .regularExpression) {
-        ver = String(fname[match])
+        ver = String(fname[match]).replacingOccurrences(of: "v", with: "").replacingOccurrences(of: "V", with: "")
     }
 
     guard let bTid = baseTid, let entry = db.first(where: { $0.titleId.caseInsensitiveCompare(bTid) == .orderedSame }) else {
@@ -403,8 +403,38 @@ class PortInstallerViewModel: ObservableObject {
         ]
         for c in candidates where FileManager.default.fileExists(atPath: c) {
             keysPath = c
-            break
+            return
         }
+
+        // Check for key archives in Downloads or ~/.switch
+        let searchDirs = ["\(home)/.switch", "\(home)/Downloads"]
+        for dir in searchDirs {
+            guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir) else { continue }
+            for file in files where file.lowercased().hasSuffix(".zip") && file.lowercased().contains("key") {
+                let zipPath = "\(dir)/\(file)"
+                if let extracted = extractKeysFromZip(zipPath: zipPath) {
+                    keysPath = extracted
+                    return
+                }
+            }
+        }
+    }
+
+    func extractKeysFromZip(zipPath: String) -> String? {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let switchDir = "\(home)/.switch"
+        try? FileManager.default.createDirectory(atPath: switchDir, withIntermediateDirectories: true)
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        task.arguments = ["-q", "-o", zipPath, "prod.keys", "title.keys", "-d", switchDir]
+        try? task.run()
+        task.waitUntilExit()
+
+        let extractedProd = "\(switchDir)/prod.keys"
+        if FileManager.default.fileExists(atPath: extractedProd) {
+            return extractedProd
+        }
+        return nil
     }
 
     func formattedEta() -> String {
@@ -489,7 +519,14 @@ class PortInstallerViewModel: ObservableObject {
         panel.prompt = "Select prod.keys"
 
         if panel.runModal() == .OK, let url = panel.url {
-            keysPath = url.path
+            let path = url.path
+            if path.lowercased().hasSuffix(".zip") {
+                if let extracted = extractKeysFromZip(zipPath: path) {
+                    keysPath = extracted
+                    return
+                }
+            }
+            keysPath = path
         }
     }
 
@@ -565,7 +602,11 @@ class PortInstallerViewModel: ObservableObject {
 
         outHandle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let output = String(data: data, encoding: .utf8) else { return }
 
             let lines = output.components(separatedBy: .newlines)
             for line in lines {
@@ -622,6 +663,7 @@ class PortInstallerViewModel: ObservableObject {
         }
 
         process.terminationHandler = { [weak self] proc in
+            outHandle.readabilityHandler = nil
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isInstalling = false
@@ -2509,7 +2551,7 @@ struct LiquidPortInstallerView: View {
                                     .background(Color.mintGreen.opacity(0.15))
                                     .cornerRadius(4)
                             }
-                            Text("\(result.gameName) (Version \(result.detectedVersion))")
+                            Text("\(result.gameName) (Version \(result.detectedVersion.lowercased().hasPrefix("v") ? result.detectedVersion : "v" + result.detectedVersion))")
                                 .font(.system(size: 12.5, weight: .semibold))
                                 .foregroundColor(.white)
                             Text("All game-specific 60 FPS patches, native MetalFX configurations, and shader tables are registered in nxnative.")
@@ -2544,7 +2586,7 @@ struct LiquidPortInstallerView: View {
                                     .background(Color.accentAmber.opacity(0.15))
                                     .cornerRadius(4)
                             }
-                            Text("\(result.gameName) (Detected: v\(result.detectedVersion) | Officially Tested: v\(result.testedVersion))")
+                            Text("\(result.gameName) (Detected: \(result.detectedVersion.lowercased().hasPrefix("v") ? result.detectedVersion : "v" + result.detectedVersion) | Officially Tested: \(result.testedVersion.lowercased().hasPrefix("v") ? result.testedVersion : "v" + result.testedVersion))")
                                 .font(.system(size: 12.5, weight: .semibold))
                                 .foregroundColor(.white)
                             Text(result.unsupportedNote ?? "Older or unlisted game versions lack registered shader pairs and 60 FPS patches. A derived provisional profile will be generated, but porting may or may not succeed.")
