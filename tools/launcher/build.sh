@@ -45,6 +45,13 @@ cp "$DIR/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 # Copy game compatibility and recipes database
 cp "$DIR/games_db.json" "$APP_BUNDLE/Contents/Resources/games_db.json"
 
+# Bundle self-contained nx_extract if built (zero .NET runtime required by user)
+if [ -f "$REPO_ROOT/tools/bin/nx_extract" ]; then
+    echo "-> Bundling self-contained nx_extract (zero .NET required by user)..."
+    cp "$REPO_ROOT/tools/bin/nx_extract" "$APP_BUNDLE/Contents/Resources/nx_extract"
+    chmod +x "$APP_BUNDLE/Contents/Resources/nx_extract"
+fi
+
 # Write Info.plist
 cat << EOF > "$APP_BUNDLE/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>

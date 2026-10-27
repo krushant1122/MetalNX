@@ -368,6 +368,7 @@ class PortInstallerViewModel: ObservableObject {
     @Published var updateNspPath: String = ""
     @Published var folderPath: String = ""
     @Published var keysPath: String = ""
+    @Published var destinationPath: String = "/Applications"
     @Published var isInstalling: Bool = false
     @Published var currentStage: String = "Ready"
     @Published var currentProgress: Double = 0.0
@@ -530,6 +531,19 @@ class PortInstallerViewModel: ObservableObject {
         }
     }
 
+    func browseDestination() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select Install Location"
+        panel.message = "Choose an installation folder or external SSD for native game ports"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            destinationPath = url.path
+        }
+    }
+
     func startInstallation(onSuccess: @escaping (String) -> Void) {
         guard !isInstalling else { return }
 
@@ -581,6 +595,10 @@ class PortInstallerViewModel: ObservableObject {
 
         if !keysPath.isEmpty {
             args.append(contentsOf: ["--keys", keysPath])
+        }
+
+        if destinationPath != "/Applications" && !destinationPath.isEmpty {
+            args.append(contentsOf: ["--out", destinationPath])
         }
 
         process.arguments = args
@@ -708,6 +726,11 @@ class LauncherViewModel: ObservableObject {
     @Published var activeTab: Int = 0
     @Published var gamesDatabase: [GameDbEntry] = []
     @Published var showingDatabaseSheet: Bool = false
+    @Published var customScanFolders: [String] = [] {
+        didSet {
+            UserDefaults.standard.set(customScanFolders, forKey: "kMetalNXCustomScanFolders")
+        }
+    }
 
     var selectedGame: GameProfile? {
         return detectedGames.first(where: { $0.titleId == selectedGameId })
@@ -718,6 +741,9 @@ class LauncherViewModel: ObservableObject {
     }
 
     init() {
+        if let saved = UserDefaults.standard.stringArray(forKey: "kMetalNXCustomScanFolders") {
+            customScanFolders = saved
+        }
         gamesDatabase = loadGamesDatabase()
         scanInstalledGames()
         loadSettings()
@@ -746,13 +772,30 @@ class LauncherViewModel: ObservableObject {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
 
-        let candidateDirs = [
+        var candidateDirs = [
             "/Applications",
             "\(home)/Applications",
             "\(home)/Games",
             "\(home)/Desktop",
             "\(home)/Downloads"
         ]
+        for f in customScanFolders where !candidateDirs.contains(f) && fm.fileExists(atPath: f) {
+            candidateDirs.append(f)
+        }
+
+        // Also check any mounted external volumes for Games or Applications
+        if let volumes = try? fm.contentsOfDirectory(atPath: "/Volumes") {
+            for vol in volumes where vol != "Macintosh HD" {
+                let vGames = "/Volumes/\(vol)/Games"
+                if fm.fileExists(atPath: vGames) && !candidateDirs.contains(vGames) {
+                    candidateDirs.append(vGames)
+                }
+                let vApps = "/Volumes/\(vol)/Applications"
+                if fm.fileExists(atPath: vApps) && !candidateDirs.contains(vApps) {
+                    candidateDirs.append(vApps)
+                }
+            }
+        }
 
         let catalog = kKnownGameCatalog
         var detectedList: [GameProfile] = []
@@ -845,6 +888,31 @@ class LauncherViewModel: ObservableObject {
             }
             self.flashStatus("Library synced (\(uniqueDetected.count) detected)")
         }
+    }
+
+    func addScanFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add Scan Folder"
+        panel.message = "Choose an external drive or folder containing Switch game ports"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            let path = url.path
+            if !customScanFolders.contains(path) {
+                customScanFolders.append(path)
+                scanInstalledGames()
+                flashStatus("Added scan folder: \((path as NSString).lastPathComponent)")
+            }
+        }
+    }
+
+    func removeScanFolder(at index: Int) {
+        guard index < customScanFolders.count else { return }
+        let removed = customScanFolders.remove(at: index)
+        scanInstalledGames()
+        flashStatus("Removed \((removed as NSString).lastPathComponent)")
     }
 
     func addCustomGame() {
@@ -1485,7 +1553,49 @@ struct LiquidLibraryTweakerView: View {
                         .foregroundColor(Color.iceBlue)
                     }
                     .buttonStyle(.plain)
-        .focusable(false)
+                    .focusable(false)
+
+                    Button(action: { vm.addScanFolder() }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "folder.badge.plus")
+                            Text("Scan Folder...")
+                        }
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.accentAmber)
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                }
+
+                if !vm.customScanFolders.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(Array(vm.customScanFolders.enumerated()), id: \.offset) { idx, folder in
+                                HStack(spacing: 5) {
+                                    Image(systemName: folder.hasPrefix("/Volumes") ? "externaldrive.fill" : "folder.fill")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(Color.mintGreen)
+                                    Text((folder as NSString).lastPathComponent)
+                                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                        .foregroundColor(.white)
+                                    Button(action: { vm.removeScanFolder(at: idx) }) {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 8, weight: .bold))
+                                            .foregroundColor(Color.white.opacity(0.6))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(Color.white.opacity(0.08))
+                                .cornerRadius(5)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 5)
+                                        .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                                )
+                            }
+                        }
+                    }
                 }
 
                 if vm.detectedGames.isEmpty {
@@ -2683,7 +2793,41 @@ struct LiquidPortInstallerView: View {
                     .font(.system(size: 10.5))
                     .foregroundColor(Color.iceBlue)
                     .buttonStyle(.plain)
-        .focusable(false)
+                    .focusable(false)
+                }
+            }
+
+            // Step 3: Installation Target / Location
+            LiquidGroupWell(title: "3. Installation Target Directory (Internal or External SSD)", icon: "internaldrive") {
+                HStack(spacing: 8) {
+                    Image(systemName: installerVm.destinationPath.hasPrefix("/Volumes") ? "externaldrive.fill" : "internaldrive.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.mintGreen)
+
+                    Text(installerVm.destinationPath)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(Color.white.opacity(0.85))
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Button("Change...") {
+                        installerVm.browseDestination()
+                    }
+                    .font(.system(size: 10.5))
+                    .foregroundColor(Color.iceBlue)
+                    .buttonStyle(.plain)
+                    .focusable(false)
+
+                    if installerVm.destinationPath != "/Applications" {
+                        Button("Default") {
+                            installerVm.destinationPath = "/Applications"
+                        }
+                        .font(.system(size: 10))
+                        .foregroundColor(Color.white.opacity(0.45))
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                    }
                 }
             }
 

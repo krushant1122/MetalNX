@@ -21,6 +21,40 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
+def ensure_nx_extract(repo_root):
+    """Ensures nx_extract executable is available, copying from bundle or installing dotnet if missing."""
+    candidates = [
+        HERE / "nx_extract",
+        Path("/Applications/MetalNX.app/Contents/Resources/nx_extract"),
+        repo_root / "tools/bin/nx_extract",
+        repo_root / "tools/nx_extract/nx_extract",
+        Path.home() / ".switch/nx_extract",
+    ]
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            target = Path.home() / ".switch/nx_extract"
+            if not target.is_file():
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(c, target)
+                except Exception:
+                    pass
+            return c
+
+    # If dotnet is available, build_nx_extract can build it
+    if shutil.which("dotnet") or (Path.home() / ".dotnet/dotnet").is_file():
+        return None
+
+    # If neither prebuilt nor dotnet is present, auto-install .NET 10 via official script
+    emit("PROGRESS", 0.05, "Stage 1/7: Initializing", "Installing .NET 10 ARM64 runtime dependency...", eta_sec=45)
+    try:
+        install_script = "curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0"
+        subprocess.run(install_script, shell=True, check=True, capture_output=True)
+    except Exception:
+        pass
+    return None
+
+
 def find_repo_root():
     """Dynamically locates the nxnative root repository across standard locations."""
     # 1. Environment variables
@@ -409,6 +443,8 @@ def main():
         emit("ERROR", 0.0, "Configuration", "Could not locate or download MetalNX engine. Please clone https://github.com/krushant1122/MetalNX to ~/nxnative or set NXNATIVE_ROOT.")
         sys.exit(1)
 
+    ensure_nx_extract(repo_root)
+
     build_script = repo_root / "scripts/build_ipa_from_nsp.py"
     if not build_script.is_file():
         emit("ERROR", 0.0, "Configuration", f"Could not find build script at {build_script}")
@@ -495,9 +531,11 @@ def main():
 
         if final_app_path:
             app_name = Path(final_app_path).name
-            dest_app = Path("/Applications") / app_name
+            dest_dir = Path(args.out).resolve() if args.out else Path("/Applications")
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest_app = dest_dir / app_name
             if Path(final_app_path).resolve() != dest_app.resolve():
-                emit("PROGRESS", 0.98, "Stage 7/7: Installing", f"Moving {app_name} to /Applications...", eta_sec=2, elapsed_sec=elapsed)
+                emit("PROGRESS", 0.98, "Stage 7/7: Installing", f"Moving {app_name} to {dest_dir}...", eta_sec=2, elapsed_sec=elapsed)
                 if dest_app.exists():
                     shutil.rmtree(dest_app)
                 shutil.move(final_app_path, dest_app)
