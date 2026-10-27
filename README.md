@@ -220,6 +220,19 @@ tools/launcher/
 
 ---
 
+## Credits & Architecture
+
+MetalNX consists of two distinct layers:
+1. **MetalNX Control Center & 1-Click Studio** (`tools/launcher/`):
+   - Designed and built by **Krushant** ([@krushant1122](https://github.com/krushant1122)).
+   - Native macOS SwiftUI control panel, 1-Click Port pipeline with real-time telemetry, 72-game offline recipe and compatibility catalog (`games_db.json`), package verifier, and zero-dependency bundled extraction runtime.
+2. **nxnative Core Engine & Runtime** (`dm/`, `scripts/`):
+   - Created by **seedds** ([nxnative](https://github.com/seedds/nxnative)).
+   - Implements native Horizon SVC handling, Maxwell/NVN/Vulkan to Apple Metal shader translation, and static ARM64 module rewriting.
+   - The engine is vendored in `dm/` to provide an all-in-one, plug-and-play experience for players without requiring manual git submodules or terminal compilation steps. Full reverse engineering credit for the underlying runtime belongs to `seedds` and contributors.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party components keep their own licenses; see [`dm/third_party`](dm/third_party/README.md).

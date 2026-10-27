@@ -27,4 +27,4 @@
 
   The translator is `dm/gfx/tools/dmsh_xlate_bin`, which matches `dmsh_chain.lock`; a fresh `dotnet publish` does not.
 - iOS builds are unsigned IPAs that the user sideloads and tests; diagnostics come back as the app's `Documents/log.txt`. Do not sign or install builds on the user's devices.
-- Commit only when asked, with `git -c user.name=seedds -c user.email=seedds@gmail.com commit`.
+- Commits to MetalNX are authored by Krushant (@krushant1122). Upstream engine contributions adhere to nxnative guidelines.
