@@ -465,6 +465,37 @@ testRepoProc.waitUntilExit()
 let repoOutput = String(data: repoPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 assertTrue(repoOutput.contains("VALID_REPO_PASSED"), "App bundle rejection and dynamic repo discovery verified")
 
+// Test 11: Crash Report Generation & Disk Telemetry Logging
+print("\n--- Test 11: Crash Reporting & Telemetry Logging ---")
+let testCrashProc = Process()
+testCrashProc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+testCrashProc.arguments = ["-c", """
+import sys
+from pathlib import Path
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+install_nsp.write_crash_log(
+    stage='Stage 2/7: Extracting Game RomFS & Assets',
+    message='Simulated test extraction failure',
+    recent_lines=['line 1: start extract', 'line 2: fatal error in test'],
+    title_id='0100152000022000'
+)
+log_path = Path.home() / 'Library/Logs/MetalNX/latest_crash_report.txt'
+assert log_path.is_file(), 'latest_crash_report.txt must be written'
+txt = log_path.read_text(encoding='utf-8')
+assert 'MetalNX Port Diagnostic & Crash Report' in txt, 'Header present'
+assert '0100152000022000' in txt, 'Title ID present'
+assert 'Simulated test extraction failure' in txt, 'Error message present'
+assert 'fatal error in test' in txt, 'Telemetry line present'
+print('CRASH_REPORT_TEST_PASSED')
+"""]
+let crashPipe = Pipe()
+testCrashProc.standardOutput = crashPipe
+try? testCrashProc.run()
+testCrashProc.waitUntilExit()
+let crashOutput = String(data: crashPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(crashOutput.contains("CRASH_REPORT_TEST_PASSED"), "Diagnostic crash report generation and telemetry persistence verified")
+
 // Summary
 print("\n==================================================")
 print("TEST SUMMARY: \(testsPassed)/\(testsRun) passed (\(testsFailed) failed)")

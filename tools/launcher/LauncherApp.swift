@@ -378,6 +378,8 @@ class PortInstallerViewModel: ObservableObject {
     @Published var installedAppPath: String? = nil
     @Published var isCompleted: Bool = false
     @Published var errorMessage: String? = nil
+    @Published var lastCrashReportPath: String? = nil
+    @Published var reportCopiedToast: Bool = false
     @Published var verificationResult: VerificationResult? = nil
 
     private var activeProcess: Process?
@@ -662,6 +664,7 @@ class PortInstallerViewModel: ObservableObject {
                             } else if status == "ERROR" {
                                 self.isInstalling = false
                                 self.errorMessage = msg
+                                self.recordCrashReport(reason: msg)
                             }
                             return
                         }
@@ -681,7 +684,9 @@ class PortInstallerViewModel: ObservableObject {
                 guard let self = self else { return }
                 self.isInstalling = false
                 if proc.terminationStatus != 0 && self.errorMessage == nil {
-                    self.errorMessage = "Compilation process exited with code \(proc.terminationStatus)."
+                    let err = "Compilation process exited with code \(proc.terminationStatus)."
+                    self.errorMessage = err
+                    self.recordCrashReport(reason: err)
                 }
             }
         }
@@ -689,8 +694,129 @@ class PortInstallerViewModel: ObservableObject {
         do {
             try process.run()
         } catch {
-            self.errorMessage = "Failed to launch installer process: \(error.localizedDescription)"
+            let err = "Failed to launch installer process: \(error.localizedDescription)"
+            self.errorMessage = err
+            self.recordCrashReport(reason: err)
             self.isInstalling = false
+        }
+    }
+
+    func generateCrashReport(reason: String) -> String {
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+        let memGB = String(format: "%.1f GB", Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024))
+
+        var chipName = "Apple Silicon"
+        var size: size_t = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        if size > 0 {
+            var machine = [CChar](repeating: 0, count: Int(size))
+            sysctlbyname("machdep.cpu.brand_string", &machine, &size, nil, 0)
+            chipName = String(cString: machine)
+        }
+
+        let dateStr = ISO8601DateFormatter().string(from: Date())
+        let targetGame = verificationResult?.gameName ?? "Unknown Game"
+        let titleId = verificationResult?.titleId ?? "Unknown ID"
+        let version = verificationResult?.detectedVersion ?? "Unknown Version"
+        let recentLogs = consoleLogs.suffix(60).joined(separator: "\n")
+
+        return """
+### MetalNX Port Diagnostic & Crash Report
+- **Date**: \(dateStr)
+- **App Version**: MetalNX v2.0.8
+- **OS**: macOS \(osVersion)
+- **Hardware**: \(chipName) (\(memGB) RAM)
+- **Game**: \(targetGame) (`\(titleId)`)
+- **Version**: \(version)
+- **Failing Stage**: \(currentStage)
+- **Failure Reason**: \(reason)
+
+#### Source Configuration:
+- Base NSP: \(baseNspPath.isEmpty ? "None" : (baseNspPath as NSString).lastPathComponent)
+- Update NSP: \(updateNspPath.isEmpty ? "None" : (updateNspPath as NSString).lastPathComponent)
+- Folder Source: \(folderPath.isEmpty ? "None" : folderPath)
+- Destination: \(destinationPath)
+
+#### Recent Compilation Telemetry (Last \(min(consoleLogs.count, 60)) lines):
+```
+\(recentLogs.isEmpty ? "No telemetry recorded" : recentLogs)
+```
+"""
+    }
+
+    func recordCrashReport(reason: String) {
+        let report = generateCrashReport(reason: reason)
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let logsDir = "\(home)/Library/Logs/MetalNX"
+        try? FileManager.default.createDirectory(atPath: logsDir, withIntermediateDirectories: true)
+
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let filename = "\(logsDir)/MetalNX_Crash_\(timestamp).txt"
+        let latest = "\(logsDir)/latest_crash_report.txt"
+
+        try? report.write(toFile: filename, atomically: true, encoding: .utf8)
+        try? report.write(toFile: latest, atomically: true, encoding: .utf8)
+
+        self.lastCrashReportPath = latest
+    }
+
+    func sendGitHubErrorReport() {
+        guard let errorMsg = errorMessage else { return }
+        let report = generateCrashReport(reason: errorMsg)
+
+        // Preload complete diagnostics into the user's clipboard
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        self.reportCopiedToast = true
+
+        let targetGame = verificationResult?.gameName ?? "Game"
+        let title = "[Port Failure] \(targetGame) - \(currentStage): \(errorMsg.prefix(50))"
+        let titleEncoded = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "Port Failure"
+
+        // Keep URL safe across web browser URL length limits
+        var body = report
+        if body.count > 3500 {
+            let truncatedLogs = consoleLogs.suffix(25).joined(separator: "\n")
+            body = """
+### MetalNX Port Diagnostic & Crash Report
+- **App Version**: MetalNX v2.0.8
+- **Game**: \(verificationResult?.gameName ?? "Unknown") (`\(verificationResult?.titleId ?? "")`)
+- **Failing Stage**: \(currentStage)
+- **Failure Reason**: \(errorMsg)
+
+#### Recent Compilation Telemetry (Summary):
+```
+\(truncatedLogs)
+```
+
+*(Note: The full 60-line unclipped telemetry report has already been copied to your clipboard! Paste directly into this issue description).*
+"""
+        }
+        let bodyEncoded = body.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let issueUrlStr = "https://github.com/krushant1122/MetalNX/issues/new?title=\(titleEncoded)&body=\(bodyEncoded)&labels=bug,port-failure"
+        if let url = URL(string: issueUrlStr) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func copyCrashReportToClipboard() {
+        guard let errorMsg = errorMessage else { return }
+        let report = generateCrashReport(reason: errorMsg)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(report, forType: .string)
+        self.reportCopiedToast = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.reportCopiedToast = false
+        }
+    }
+
+    func revealCrashLogInFinder() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let logsDir = "\(home)/Library/Logs/MetalNX"
+        if let path = lastCrashReportPath, FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        } else {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: logsDir)
         }
     }
 
@@ -2888,11 +3014,116 @@ struct LiquidPortInstallerView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Color.mintGreen)
                     .buttonStyle(.plain)
-        .focusable(false)
+                    .focusable(false)
                 }
                 .padding(12)
                 .background(Color.mintGreen.opacity(0.12))
                 .cornerRadius(10)
+            }
+
+            // Error & 1-Click Crash Reporting Banner
+            if let error = installerVm.errorMessage {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 20))
+                            .foregroundColor(Color.accentCoral)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Port Generation Failed")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(Color.accentCoral)
+                            Text(error)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(Color.white.opacity(0.85))
+                                .lineLimit(3)
+                        }
+
+                        Spacer()
+                    }
+
+                    Divider()
+                        .background(Color.accentCoral.opacity(0.2))
+
+                    HStack(spacing: 8) {
+                        // 1-Click GitHub Crash Report Button
+                        Button(action: {
+                            installerVm.sendGitHubErrorReport()
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "paperplane.fill")
+                                    .font(.system(size: 10.5))
+                                Text("1-Click Send Report (GitHub)")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .frame(height: 28)
+                            .background(Color.accentCoral)
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+
+                        // Copy Report Button
+                        Button(action: {
+                            installerVm.copyCrashReportToClipboard()
+                        }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: installerVm.reportCopiedToast ? "checkmark" : "doc.on.doc")
+                                    .font(.system(size: 10))
+                                Text(installerVm.reportCopiedToast ? "Copied!" : "Copy Report")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .foregroundColor(installerVm.reportCopiedToast ? Color.mintGreen : .white)
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(Color.white.opacity(0.08))
+                            .cornerRadius(6)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+
+                        // Reveal in Finder Button
+                        Button(action: {
+                            installerVm.revealCrashLogInFinder()
+                        }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 10))
+                                Text("Reveal Log")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .foregroundColor(.white.opacity(0.7))
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(Color.white.opacity(0.05))
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+
+                        Spacer()
+                    }
+
+                    if installerVm.reportCopiedToast {
+                        Text("✓ Full diagnostic report copied to clipboard. Ready to paste in GitHub / Reddit / Discord.")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(Color.mintGreen)
+                            .transition(.opacity)
+                    }
+                }
+                .padding(12)
+                .background(Color.accentCoral.opacity(0.12))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.accentCoral.opacity(0.35), lineWidth: 0.5)
+                )
             }
 
             // Primary Build Button

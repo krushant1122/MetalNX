@@ -248,7 +248,34 @@ def load_games_db():
     return {}
 
 
+def write_crash_log(stage="", message="", recent_lines=None, title_id=None):
+    try:
+        log_dir = Path.home() / "Library/Logs/MetalNX"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        report = [
+            "### MetalNX Port Diagnostic & Crash Report",
+            f"- Date: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"- Title ID: {title_id or 'Unknown'}",
+            f"- Failing Stage: {stage or 'Execution'}",
+            f"- Failure Reason: {message}",
+        ]
+        if recent_lines:
+            report += [
+                "\n#### Recent Telemetry:",
+                "```",
+            ] + list(recent_lines) + [
+                "```\n"
+            ]
+        content = "\n".join(report)
+        (log_dir / "latest_crash_report.txt").write_text(content, encoding="utf-8")
+        (log_dir / f"MetalNX_Crash_{int(time.time())}.txt").write_text(content, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def emit(status, progress=0.0, stage="", message="", eta_sec=None, elapsed_sec=0):
+    if status == "ERROR":
+        write_crash_log(stage=stage, message=message)
     data = {
         "status": status,
         "progress": round(progress, 3),
@@ -691,6 +718,7 @@ def main():
             if not err_line and recent_lines:
                 err_line = recent_lines[-1]
             error_msg = f"{err_line}" if err_line else f"Build process failed with exit code {proc.returncode}"
+            write_crash_log(stage=current_stage, message=error_msg, recent_lines=recent_lines, title_id=primary_title_id)
             emit("ERROR", current_progress, current_stage, error_msg, elapsed_sec=elapsed)
             sys.exit(proc.returncode)
 
