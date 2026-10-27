@@ -461,6 +461,22 @@ def main():
     # 3. Setup Environment
     env = os.environ.copy()
     home = str(Path.home())
+
+    # Guarantee standard Homebrew and system PATHs in GUI environment
+    path_dirs = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    current_paths = env.get("PATH", "").split(":")
+    for pd in path_dirs:
+        if pd not in current_paths and os.path.isdir(pd):
+            current_paths.insert(0, pd)
+    env["PATH"] = ":".join(current_paths)
+    os.environ["PATH"] = env["PATH"]
+
     dotnet_candidates = [
         Path(home) / ".dotnet",
         Path("/usr/local/share/dotnet"),
@@ -527,10 +543,12 @@ def main():
             env=env,
         )
 
+        recent_lines = collections.deque(maxlen=40)
         for raw_line in iter(proc.stdout.readline, ""):
             line = raw_line.strip()
             if not line:
                 continue
+            recent_lines.append(line)
 
             for pattern, weight, st_name in stage_progression:
                 if pattern.search(line):
@@ -560,7 +578,15 @@ def main():
         elapsed = time.time() - start_time
 
         if proc.returncode != 0:
-            emit("ERROR", current_progress, current_stage, f"Build process failed with exit code {proc.returncode}", elapsed_sec=elapsed)
+            err_line = None
+            for l in reversed(recent_lines):
+                if any(k in l.lower() for k in ["error", "fatal", "failed", "differ from game profile", "tools not found", "missing", "spirv-cross"]):
+                    err_line = l
+                    break
+            if not err_line and recent_lines:
+                err_line = recent_lines[-1]
+            error_msg = f"{err_line}" if err_line else f"Build process failed with exit code {proc.returncode}"
+            emit("ERROR", current_progress, current_stage, error_msg, elapsed_sec=elapsed)
             sys.exit(proc.returncode)
 
         # 5. Finalize App Bundle
