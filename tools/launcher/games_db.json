@@ -3201,6 +3201,12 @@
         "mainBuildId": "2c336a9bcf79c3040ce506cdd391b578"
       },
       {
+        "versionCode": "v1441792",
+        "displayVersion": "3.0.3",
+        "isTested": true,
+        "mainBuildId": "6a85262f21b903649bd7c62628d26e43"
+      },
+      {
         "versionCode": "v1507328",
         "displayVersion": "4.0.1",
         "isTested": true,

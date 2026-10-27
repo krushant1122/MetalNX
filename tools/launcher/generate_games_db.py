@@ -136,16 +136,14 @@ def main():
     for g in sorted(all_g, key=lambda x: x.get("name", x.id)):
         tid = g.id.upper()
         name = g.get("name", readme_map.get(tid, {}).get("name", tid))
-        builds_dict = g.builds()
-
         supported_versions = []
-        for ver_key, b_info in builds_dict.items():
-            disp = b_info.get("display", ver_key)
+        for ver_key, disp, *mods in g.values("build"):
+            mdict = dict([tuple(m.split("=", 1)) for m in mods])
             supported_versions.append({
                 "versionCode": ver_key,
                 "displayVersion": disp,
                 "isTested": True,
-                "mainBuildId": b_info.get("main", "")
+                "mainBuildId": mdict.get("main", "")
             })
 
         rm = readme_map.get(tid, {})

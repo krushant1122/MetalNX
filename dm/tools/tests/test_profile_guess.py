@@ -23,6 +23,16 @@ class UnrealMemory(unittest.TestCase):
         heap = reserve - 0x10000000 - alias - stack
         self.assertGreaterEqual(heap, 128 * pg.MiB)
 
+    def test_dynsyms_missing_tags(self):
+        import nso_syms
+        self.assertEqual(nso_syms.dynsyms(b''), [])
+        # Image with MOD0 but missing DT_SYMTAB tag 6 and DT_STRTAB tag 5
+        img = bytearray(0x100)
+        img[4:8] = (0x20).to_bytes(4, 'little')
+        img[0x20:0x24] = b'MOD0'
+        img[0x24:0x28] = (0x10).to_bytes(4, 'little', signed=True)
+        self.assertEqual(nso_syms.dynsyms(bytes(img)), [])
+
 
 if __name__ == '__main__':
     unittest.main()

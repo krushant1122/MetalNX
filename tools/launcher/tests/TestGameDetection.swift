@@ -385,6 +385,13 @@ let xciPath = "/Volumes/Backup/Monster Hunter Rise [0100559011740000][v0].xci"
 let resD = verifyTestPackage(path: xciPath, db: db)
 assertTrue(resD.titleId == "0100559011740000", "XCI cartridge dump Title ID extracted correctly")
 
+// Subtest 7E: Mario Kart 8 Deluxe Update v1441792 (3.0.3 / 4.0.0)
+let mk8dUpdatePath = "/Volumes/Backup/Mario Kart 8 Deluxe [0100152000022800][v1441792].nsp"
+let resE = verifyTestPackage(path: mk8dUpdatePath, db: db)
+assertEqual(resE.status, "VERIFIED_SUPPORTED", "Mario Kart 8 Deluxe v1441792 update classified as VERIFIED_SUPPORTED")
+assertTrue(resE.isSupported, "Mario Kart 8 Deluxe update flagged as supported")
+assertEqual(resE.titleId, "0100152000022000", "Mario Kart 8 Deluxe update Title ID normalized to Base ID")
+
 // Test 8: Recipe env.txt Preseeding Verification
 print("\n--- Test 8: Recipe Preseeding & Synchronization ---")
 let testEnvDir = NSTemporaryDirectory() + "nxnative_recipe_test"

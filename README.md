@@ -10,10 +10,10 @@
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20M2%20M3%20M4-blue?style=flat-square&logo=apple)](https://www.apple.com/mac/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=flat-square&logo=swift)](https://swift.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-47%2F47_passing-brightgreen?style=flat-square)](#automated-tests)
-[![Release](https://img.shields.io/badge/Download-v2.0.6_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.6)
+[![Tests](https://img.shields.io/badge/Tests-50%2F50_passing-brightgreen?style=flat-square)](#automated-tests)
+[![Release](https://img.shields.io/badge/Download-v2.0.7_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.7)
 
-[**Download MetalNX-2.0.6.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.6) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
+[**Download MetalNX-2.0.7.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.7) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
 
 </div>
 

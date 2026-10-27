@@ -109,7 +109,7 @@ MetalNX probes host hardware via Metal APIs (`MTLCreateSystemDefaultDevice()`):
 ## Installation & Setup
 
 ### Option A: Drag-and-Drop Disk Image (Recommended)
-1. Download or build `MetalNX-2.0.6.dmg`.
+1. Download or build `MetalNX-2.0.7.dmg`.
 2. Double-click to mount the DMG.
 3. Drag **MetalNX** into the **Applications** shortcut.
 4. Launch `MetalNX` from Spotlight or Launchpad.
@@ -213,10 +213,10 @@ MetalNX includes an automated Swift unit test suite verifying library scanning, 
 | `tools/launcher/build.sh` | Production compilation, app bundling, codesigning, and `.dmg` packaging script |
 | `tools/launcher/make_icon.py` | Minimalist geometric MetalNX icon generator (`AppIcon.icns`) |
 | `tools/launcher/install_nsp.py` | Streaming port installer backend, live verifier, and recipe pre-seeder |
-| `tools/launcher/tests/TestGameDetection.swift` | 47-test automated unit test suite |
+| `tools/launcher/tests/TestGameDetection.swift` | 50-test automated unit test suite |
 | `tools/launcher/tests/run_tests.sh` | Standalone test runner script |
 | `build/launcher/MetalNX.app` | Compiled native macOS application |
-| `build/launcher/MetalNX-2.0.6.dmg` | Drag-and-drop macOS disk image installer |
+| `build/launcher/MetalNX-2.0.7.dmg` | Drag-and-drop macOS disk image installer |
 | `/Applications/MetalNX.app` | Installed system application |
 
 ---
