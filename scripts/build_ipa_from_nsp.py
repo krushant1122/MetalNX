@@ -63,15 +63,19 @@ HEAP_CHECK_NNMAIN_SECS = 5
 
 PROGRESS = 'auto'                       # stage lines on the console: 'bar' (one line per stage, redrawn in place), 'lines' (a plain line every BEAT seconds), 'off' (only each stage's start and end); 'auto' = bar in a terminal or Spyder, lines when the output goes to a file; 'json' = one JSON event per line, for a program that shows the build
 BEAT = 30                               # seconds between progress lines in 'lines' mode
-TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/local/share/dotnet', os.path.expanduser('~/.dotnet')]   # GUI apps such as Spyder do not get the shell's PATH
+TOOL_PATHS = [
+    str(Path(__file__).resolve().parent.parent / 'tools/launcher/bin'),
+    '/Applications/MetalNX.app/Contents/Resources/bin',
+    '/Applications/MetalNX.app/Contents/Resources',
+    str(Path.home() / '.switch'),
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin'
+]   # GUI apps such as Spyder do not get the shell's PATH
 
-for _d in [Path.home() / '.dotnet', Path('/usr/local/share/dotnet'), Path('/opt/homebrew/opt/dotnet')]:
-    if (_d / 'dotnet').exists() or _d.is_dir():
-        os.environ.setdefault('DOTNET_ROOT', str(_d))
-        os.environ.setdefault('DOTNET_ROOT_ARM64', str(_d))
-        if str(_d) not in os.environ.get('PATH', ''):
-            os.environ['PATH'] = f"{_d}:{os.environ.get('PATH', '')}"
-        break
+for _tp in TOOL_PATHS:
+    if os.path.isdir(_tp) and _tp not in os.environ.get('PATH', '').split(':'):
+        os.environ['PATH'] = f"{_tp}:{os.environ.get('PATH', '')}"
 
 
 class BuildError(Exception):
@@ -847,8 +851,10 @@ def check_prereqs(env, xlate, mac=False):   # mac: a Mac-only build (PLATFORM 'm
     if missing: raise BuildError(f'the current Python ({sys.executable}) is missing modules: {", ".join(missing)} (pip install lz4 capstone fonttools backports.zstd; backports.zstd only before Python 3.14)')
     tools = {'xcodebuild': 'Xcode', 'xcodegen': 'brew install xcodegen', 'dotnet': '.NET SDK 10', 'zstd': 'brew install zstd', 'spirv-cross': 'brew install spirv-cross', 'make': 'Xcode'}
     if mac: del tools['xcodegen']
-    if find_prebuilt_nx_extract():
+    if find_prebuilt_nx_extract() or (Path.home() / '.switch/nx_extract').is_file():
         tools.pop('dotnet', None)
+    if _importable('compression.zstd') or _importable('backports.zstd'):
+        tools.pop('zstd', None)
     gone = [f'{t} ({how})' for t, how in tools.items() if not shutil.which(t, path=env['PATH'])]
     if gone: raise BuildError('tools not found: ' + ', '.join(gone))
     mtl = subprocess.run(['xcrun', '-sdk', 'macosx' if mac else 'iphoneos', 'metal', '--version'], capture_output=True, text=True, env=env)   # Xcode 26 and later install the Metal toolchain separately

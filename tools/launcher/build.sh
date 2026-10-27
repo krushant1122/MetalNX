@@ -10,7 +10,7 @@ BUILD_DIR="$REPO_ROOT/build/launcher"
 APP_NAME="MetalNX.app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME"
 INSTALL_DIR="/Applications/$APP_NAME"
-VERSION="2.0.4"
+VERSION="2.0.5"
 
 echo "=== Building MetalNX Control Center v$VERSION ==="
 mkdir -p "$BUILD_DIR"
@@ -55,6 +55,14 @@ if [ -f "$REPO_ROOT/tools/bin/nx_extract" ]; then
     echo "-> Bundling self-contained nx_extract (zero .NET required by user)..."
     cp "$REPO_ROOT/tools/bin/nx_extract" "$APP_BUNDLE/Contents/Resources/nx_extract"
     chmod +x "$APP_BUNDLE/Contents/Resources/nx_extract"
+fi
+
+# Bundle standalone spirv-cross if present (zero Homebrew required by user)
+if [ -f "$DIR/bin/spirv-cross" ]; then
+    echo "-> Bundling standalone spirv-cross shader compiler..."
+    mkdir -p "$APP_BUNDLE/Contents/Resources/bin"
+    cp "$DIR/bin/spirv-cross" "$APP_BUNDLE/Contents/Resources/bin/spirv-cross"
+    chmod +x "$APP_BUNDLE/Contents/Resources/bin/spirv-cross"
 fi
 
 # Write Info.plist

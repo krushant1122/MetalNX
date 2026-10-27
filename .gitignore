@@ -3,6 +3,7 @@ build/
 *.dSYM
 LauncherBinary
 tools/bin/
+tools/launcher/bin/
 .iosdd/
 .iosdd_mac/
 .iosdd_*/
