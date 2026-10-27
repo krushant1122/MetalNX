@@ -9865,10 +9865,35 @@ static int present_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
 // bytes), then draw 1:1 with the usual origin and output format. Queue barriers serialize both the frame's rendering and reuse of the scaler's textures across presents.
 // Replacing those textures waits for earlier presents; throttle replacement during resizing, and keep standard scaling for refused sizes. Offscreen captures own separate state.
 #define FX_REMAKE_PRESENTS 30
-typedef struct { id<MTL4FXSpatialScaler> sc; id<MTLTexture> in, out; uint64_t made_at; int made; NSUInteger refused[6]; } fx_state;
+typedef struct { id<MTL4FXSpatialScaler> sc; id<MTLTexture> in, out; uint64_t made_at; int made; NSUInteger refused[6]; int color_mode; } fx_state;
 static fx_state g_fx_present;   // only the present thread encodes or replaces the scaler
 static id<MTL4Compiler> g_fx_comp;
 static int g_fx_mode = -1;   // 1 = metalfx, 0 = off
+static int g_fx_color_mode = -1; // 0 = perceptual, 1 = linear
+void front_metalfx_toggle(void) {
+    if (g_fx_mode < 0) { const char *e = getenv("DM_PRESENT_UPSCALE"); g_fx_mode = (e && (!strcmp(e, "metalfx") || !strcmp(e, "1"))) ? 1 : 0; }
+    g_fx_mode = !g_fx_mode;
+    MLOG("MetalFX live toggled: %s", g_fx_mode ? "ON (MetalFX Spatial Scaler)" : "OFF (Bilinear Standard)");
+}
+int front_metalfx_get(void) {
+    if (g_fx_mode < 0) { const char *e = getenv("DM_PRESENT_UPSCALE"); g_fx_mode = (e && (!strcmp(e, "metalfx") || !strcmp(e, "1"))) ? 1 : 0; }
+    return g_fx_mode;
+}
+void front_metalfx_set(int m) {
+    g_fx_mode = m ? 1 : 0;
+    MLOG("MetalFX set to: %s", g_fx_mode ? "ON" : "OFF");
+}
+void front_metalfx_set_color(int linear) {
+    g_fx_color_mode = linear ? 1 : 0;
+    MLOG("MetalFX color mode set to: %s", g_fx_color_mode ? "Linear (HDR)" : "Perceptual (sRGB)");
+}
+int front_metalfx_get_color(void) {
+    if (g_fx_color_mode < 0) {
+        const char *cm = getenv("DM_METALFX_COLOR");
+        g_fx_color_mode = (cm && !strcasecmp(cm, "linear")) ? 1 : 0;
+    }
+    return g_fx_color_mode;
+}
 static int fx_mode(void) {
     if (g_fx_mode >= 0) return g_fx_mode;
     const char *e = getenv("DM_PRESENT_UPSCALE"); int v = 0;
@@ -9889,7 +9914,7 @@ static int fx_wanted(MTLViewport vp, NSUInteger cw, NSUInteger ch) {
 static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTexture> raw, const NSUInteger r[4], MTLViewport vp, MTLPixelFormat out_pf, int remake_wait) {
     NSUInteger cw = r[2], ch = r[3], ow = (NSUInteger)vp.width, oh = (NSUInteger)vp.height;
     if (fx_mode() != 1 || !fx_wanted(vp, cw, ch)) return nil;
-    if (!fx->sc || fx->in.width != cw || fx->in.height != ch || fx->in.pixelFormat != raw.pixelFormat || fx->out.width != ow || fx->out.height != oh || fx->out.pixelFormat != out_pf) {
+    if (!fx->sc || fx->color_mode != front_metalfx_get_color() || fx->in.width != cw || fx->in.height != ch || fx->in.pixelFormat != raw.pixelFormat || fx->out.width != ow || fx->out.height != oh || fx->out.pixelFormat != out_pf) {
         NSUInteger key[6] = {cw, ch, raw.pixelFormat, ow, oh, out_pf};
         if (!memcmp(key, fx->refused, sizeof key)) return nil;
         if (remake_wait && fx->made && g_present_n < fx->made_at + FX_REMAKE_PRESENTS) return nil;
@@ -9899,9 +9924,10 @@ static id<MTLTexture> fx_encode(fx_state *fx, id<MTL4CommandBuffer> cb, id<MTLTe
         if (!g_fx_comp) g_fx_comp = [g_dev newCompilerWithDescriptor:[MTL4CompilerDescriptor new] error:&e];
         MTLFXSpatialScalerDescriptor *d = [MTLFXSpatialScalerDescriptor new];
         d.colorTextureFormat = raw.pixelFormat; d.outputTextureFormat = out_pf; d.inputWidth = cw; d.inputHeight = ch; d.outputWidth = ow; d.outputHeight = oh;
-        d.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
+        int clr = front_metalfx_get_color();
+        d.colorProcessingMode = clr ? MTLFXSpatialScalerColorProcessingModeLinear : MTLFXSpatialScalerColorProcessingModePerceptual;
         id<MTL4FXSpatialScaler> sc = g_fx_comp ? [d newSpatialScalerWithDevice:g_dev compiler:g_fx_comp] : nil;
-        fx->made_at = g_present_n; fx->made++;
+        fx->made_at = g_present_n; fx->made++; fx->color_mode = clr;
         if (!sc) { memcpy(fx->refused, key, sizeof key);
             MLOG("present upscaling: MetalFX makes no spatial scaler for %lux%lu format %lu → %lux%lu format %lu%s; this size is scaled bilinearly", (unsigned long)cw, (unsigned long)ch, (unsigned long)raw.pixelFormat,
                  (unsigned long)ow, (unsigned long)oh, (unsigned long)out_pf, g_fx_comp ? "" : " (no Metal 4 compiler)"); return nil; }

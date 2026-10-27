@@ -22,6 +22,7 @@ render_cond	on
 # ---- Versions ----
 # only the merged 4.0.0 copy is extracted; the base game's own build IDs are added when needed
 build	v1441792	4.0.0	main=2c336a9bcf79c3040ce506cdd391b578	subsdk0=d9de423efc1512328c3c05378c7cb031	sdk=ba520906609c503227871a314a94fb5f
+build	v1507328	4.0.1	main=158c0c7399aabd7bf83795c2ef3484c7	subsdk0=d9de423efc1512328c3c05378c7cb031	sdk=ba520906609c503227871a314a94fb5f
 package	v1441792
 shader_versions	v1441792
 

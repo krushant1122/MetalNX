@@ -192,9 +192,11 @@ HLE_FORCE("_ZN2nn2oe25TryPopNotificationMessageEPj", "system notification queue;
 HLE_FORCE("_ZN2nn2oe22PopNotificationMessageEv", "system notification queue (blocking); waits on the host queue", uint32_t, h_oe_PopMsg, void) {
     uint32_t m = 0;
     for (;;) {
+        dm_thread_wait_host_begin();
         pthread_mutex_lock(&g_mq_lock);
         while (!g_mqn) pthread_cond_wait(&g_mq_cond, &g_mq_lock);
         pthread_mutex_unlock(&g_mq_lock);
+        dm_thread_wait_host_end();
         if (h_oe_TryPopMsg(&m)) return m;   // another thread may have taken it in between: wait again
     }
 }

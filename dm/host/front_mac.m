@@ -114,6 +114,14 @@ static void on_key(NSEvent *e, int down) {
 static pad_slots g_slots;
 static GCController *g_held[DM_PLAYERS];   // the controller of each slot, kept alive while it holds it (the slot table keys on its pointer)
 static int g_merge, g_kbd_own;
+static int g_pad_layout_xbox = -1;
+static inline int pad_layout_is_xbox(void) {
+    if (g_pad_layout_xbox < 0) {
+        const char *s = getenv("DM_PAD_LAYOUT");
+        g_pad_layout_xbox = (s && (strcasecmp(s, "xbox") == 0 || strcmp(s, "1") == 0)) ? 1 : 0;
+    }
+    return g_pad_layout_xbox;
+}
 static int32_t pad_axis(float v) { return (int32_t)(fmaxf(-1.f, fminf(1.f, v)) * DM_STICK_MAX); }
 static void pad_read(GCExtendedGamepad *g) {
     if (!g_input_on) return;
@@ -121,7 +129,11 @@ static void pad_read(GCExtendedGamepad *g) {
     dm_haptics_apple_controller(p, g.controller);
     uint64_t m = 0;
     #define K(btn, bit) if (btn.isPressed) m |= bit
-    K(g.buttonB, DM_BTN_A); K(g.buttonA, DM_BTN_B); K(g.buttonY, DM_BTN_X); K(g.buttonX, DM_BTN_Y);   // by position: right A, bottom B, top X, left Y
+    if (pad_layout_is_xbox()) {
+        K(g.buttonA, DM_BTN_A); K(g.buttonB, DM_BTN_B); K(g.buttonX, DM_BTN_X); K(g.buttonY, DM_BTN_Y);   // Xbox / Western mapping
+    } else {
+        K(g.buttonB, DM_BTN_A); K(g.buttonA, DM_BTN_B); K(g.buttonY, DM_BTN_X); K(g.buttonX, DM_BTN_Y);   // Nintendo by position: right A, bottom B, top X, left Y
+    }
     K(g.leftShoulder, DM_BTN_L); K(g.rightShoulder, DM_BTN_R); K(g.leftTrigger, DM_BTN_ZL); K(g.rightTrigger, DM_BTN_ZR);
     K(g.buttonMenu, DM_BTN_PLUS); K(g.buttonOptions, DM_BTN_MINUS); K(g.leftThumbstickButton, DM_BTN_LS); K(g.rightThumbstickButton, DM_BTN_RS);   // nil on pads without them: not pressed
     K(g.dpad.left, DM_BTN_LEFT); K(g.dpad.up, DM_BTN_UP); K(g.dpad.right, DM_BTN_RIGHT); K(g.dpad.down, DM_BTN_DOWN);
@@ -220,6 +232,100 @@ static void *guest_tramp(void *p) {
     ((guest_arg *)p)->fn(); LOG("guest thread finished"); exit(0);
 }
 
+@interface DmMenuHandler : NSObject
++ (instancetype)shared;
+@property (nonatomic, weak) NSMenuItem *toggleItem;
+@property (nonatomic, weak) NSMenuItem *perceptualItem;
+@property (nonatomic, weak) NSMenuItem *linearItem;
+- (void)updateMenuItems;
+- (void)toggleMetalFX:(id)sender;
+- (void)setMetalFXPerceptual:(id)sender;
+- (void)setMetalFXLinear:(id)sender;
+@end
+
+static NSTextField *g_fx_hud;
+static void show_fx_hud(NSString *msg) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_win) return;
+        if (!g_fx_hud) {
+            g_fx_hud = [NSTextField labelWithString:@""];
+            g_fx_hud.alignment = NSTextAlignmentCenter;
+            g_fx_hud.textColor = NSColor.whiteColor;
+            g_fx_hud.font = [NSFont systemFontOfSize:15 weight:NSFontWeightBold];
+            g_fx_hud.wantsLayer = YES;
+            g_fx_hud.layer.backgroundColor = [NSColor colorWithRed:0.05 green:0.05 blue:0.08 alpha:0.90].CGColor;
+            g_fx_hud.layer.cornerRadius = 8;
+            g_fx_hud.layer.borderWidth = 1.5;
+            g_fx_hud.layer.borderColor = [NSColor colorWithRed:0.25 green:0.65 blue:1.0 alpha:0.9].CGColor;
+            [g_win.contentView addSubview:g_fx_hud positioned:NSWindowAbove relativeTo:nil];
+        }
+        g_fx_hud.stringValue = msg;
+        NSDictionary *attrs = @{NSFontAttributeName: g_fx_hud.font};
+        NSSize sz = [msg sizeWithAttributes:attrs];
+        CGFloat w = fmax(sz.width + 36, 260), h = 38;
+        NSRect b = g_win.contentView.bounds;
+        g_fx_hud.frame = NSMakeRect(floor((b.size.width - w) / 2), b.size.height - 55, w, h);
+        g_fx_hud.hidden = NO;
+        g_fx_hud.alphaValue = 1.0;
+
+        static uint64_t s_hud_seq = 0;
+        uint64_t seq = ++s_hud_seq;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (seq == s_hud_seq) {
+                [NSAnimationContext runAnimationGroup:^(NSAnimationContext *ctx) {
+                    ctx.duration = 0.35;
+                    g_fx_hud.animator.alphaValue = 0.0;
+                } completionHandler:^{
+                    if (seq == s_hud_seq) g_fx_hud.hidden = YES;
+                }];
+            }
+        });
+    });
+}
+
+@implementation DmMenuHandler
++ (instancetype)shared {
+    static DmMenuHandler *h;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ h = [DmMenuHandler new]; });
+    return h;
+}
+- (void)updateMenuItems {
+    extern int front_metalfx_get(void);
+    extern int front_metalfx_get_color(void);
+    int on = front_metalfx_get();
+    int lin = front_metalfx_get_color();
+    _toggleItem.state = on ? NSControlStateValueOn : NSControlStateValueOff;
+    _toggleItem.title = on ? @"MetalFX: Enabled (⌘M)" : @"MetalFX: Disabled (⌘M)";
+    _perceptualItem.state = (on && !lin) ? NSControlStateValueOn : NSControlStateValueOff;
+    _linearItem.state = (on && lin) ? NSControlStateValueOn : NSControlStateValueOff;
+}
+- (void)toggleMetalFX:(id)sender {
+    extern void front_metalfx_toggle(void);
+    extern int front_metalfx_get(void);
+    front_metalfx_toggle();
+    int on = front_metalfx_get();
+    [self updateMenuItems];
+    show_fx_hud(on ? @"✨ MetalFX: ON (Apple Spatial Scaler)" : @"⚡ MetalFX: OFF (Standard Bilinear)");
+}
+- (void)setMetalFXPerceptual:(id)sender {
+    extern void front_metalfx_set_color(int linear);
+    extern void front_metalfx_set(int m);
+    front_metalfx_set(1);
+    front_metalfx_set_color(0);
+    [self updateMenuItems];
+    show_fx_hud(@"🎨 MetalFX Mode: Perceptual (sRGB Natural)");
+}
+- (void)setMetalFXLinear:(id)sender {
+    extern void front_metalfx_set_color(int linear);
+    extern void front_metalfx_set(int m);
+    front_metalfx_set(1);
+    front_metalfx_set_color(1);
+    [self updateMenuItems];
+    show_fx_hud(@"🌈 MetalFX Mode: Linear (HDR Light)");
+}
+@end
+
 // Metal reads MTL_HUD_ENABLED when the process makes its first device, which can be before the window: set from DM_METAL_HUD before main (set in front_run, the HUD did not show)
 __attribute__((constructor)) static void hud_env(void) { front_hud_env(); }
 void front_run(void (*guest)(void)) {
@@ -251,9 +357,21 @@ void front_run(void (*guest)(void)) {
         g_win = win;
         [NSApp activateIgnoringOtherApps:YES];
         // Main menu: AppKit runs ⌘ shortcuts only through menu items, so ⌘Q quits and ⌃⌘F toggles fullscreen from here (AppKit shows the item as Globe-F and keeps ⌃⌘F as a hidden twin)
-        NSMenu *bar = [NSMenu new], *app = [NSMenu new], *wm = [[NSMenu alloc] initWithTitle:@"Window"];
+        NSMenu *bar = [NSMenu new], *app = [NSMenu new], *wm = [[NSMenu alloc] initWithTitle:@"Window"], *fx = [[NSMenu alloc] initWithTitle:@"MetalFX"];
         [[bar addItemWithTitle:@"" action:nil keyEquivalent:@""] setSubmenu:app];
         [app addItemWithTitle:@"Quit " DM_GAME_NAME action:@selector(terminate:) keyEquivalent:@"q"];
+        [[bar addItemWithTitle:@"MetalFX" action:nil keyEquivalent:@""] setSubmenu:fx];
+        NSMenuItem *tItem = [fx addItemWithTitle:@"Toggle MetalFX (⌘M)" action:@selector(toggleMetalFX:) keyEquivalent:@"m"];
+        tItem.target = [DmMenuHandler shared];
+        [DmMenuHandler shared].toggleItem = tItem;
+        [fx addItem:[NSMenuItem separatorItem]];
+        NSMenuItem *pItem = [fx addItemWithTitle:@"Mode: Perceptual (sRGB Natural)" action:@selector(setMetalFXPerceptual:) keyEquivalent:@""];
+        pItem.target = [DmMenuHandler shared];
+        [DmMenuHandler shared].perceptualItem = pItem;
+        NSMenuItem *lItem = [fx addItemWithTitle:@"Mode: Linear (HDR Light)" action:@selector(setMetalFXLinear:) keyEquivalent:@""];
+        lItem.target = [DmMenuHandler shared];
+        [DmMenuHandler shared].linearItem = lItem;
+        [[DmMenuHandler shared] updateMenuItems];
         [[bar addItemWithTitle:@"Window" action:nil keyEquivalent:@""] setSubmenu:wm];
         [wm addItemWithTitle:@"Enter Full Screen" action:@selector(toggleFullScreen:) keyEquivalent:@"f"].keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
         NSApp.mainMenu = bar;

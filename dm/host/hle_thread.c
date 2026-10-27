@@ -135,6 +135,21 @@ static int thr_in_handoff(const thr_t *t, const thr_t *self) {
 }
 // Holding G. t blocked (a guest wait, a timed sleep, YieldToAnyThread): it gave its core back, so it no longer holds the threads whose handoff made it runnable
 static void hand_leave(thr_t *t) { t->nhand = 0; }
+void dm_thread_wait_host_begin(void) {
+    thr_t *me = pthread_getspecific(g_keythr);
+    if (me) {
+        pthread_mutex_lock(&G);
+        hand_leave(me);
+        me->sleeping = 1;
+        pthread_mutex_unlock(&G);
+    }
+}
+void dm_thread_wait_host_end(void) {
+    thr_t *me = pthread_getspecific(g_keythr);
+    if (me) {
+        me->sleeping = 0;
+    }
+}
 // The peers a handoff waits for are the ones it made runnable, not every runnable higher-priority thread of the core. The host runs a
 // lower-priority thread beside busy higher-priority threads of its core all the time (it has no per-core scheduler; core_preempt aside),
 // and waiting for those threads at a wake had no bound: Tears of the Kingdom's BootupBackgroundWorkThread (priority 58) waited at each

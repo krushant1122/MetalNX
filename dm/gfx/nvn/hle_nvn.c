@@ -1843,13 +1843,33 @@ NVN(nvnBufferInitialize, NVNboolean, NVNbuffer *buf, const NVNbufferBuilder *b) 
     OLOG("BufferInitialize %p pool=%p off=%#llx size=%#llx", (void *)buf, (const void *)bb->pool, (unsigned long long)bb->off, (unsigned long long)bb->size);
     return 1;
 }
-NVN(nvnBufferFinalize, void, NVNbuffer *buf) { ((buf_t *)buf)->magic = 0; }
+extern int dm_guest_as_contains(uintptr_t a);
+static inline int is_valid_buf(const NVNbuffer *buf) {
+    return buf && dm_guest_as_contains((uintptr_t)buf) && BF(buf)->magic == MAGIC('B', 'U', 'F', 0);
+}
+
+NVN(nvnBufferFinalize, void, NVNbuffer *buf) { if (buf && dm_guest_as_contains((uintptr_t)buf)) ((buf_t *)buf)->magic = 0; }
 NVN(nvnBufferSetDebugLabel, void, NVNbuffer *buf, const char *s) { (void)buf; (void)s; }
-NVN(nvnBufferGetAddress, NVNbufferAddress, const NVNbuffer *buf) { return (NVNbufferAddress)(BF(buf)->pool->mem + BF(buf)->off); }
-NVN(nvnBufferMap, void *, const NVNbuffer *buf) { return BF(buf)->pool->mem + BF(buf)->off; }
-NVN(nvnBufferGetSize, size_t, const NVNbuffer *buf) { return (size_t)BF(buf)->size; }
-NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *buf) { return (NVNmemoryPool *)BF(buf)->pool; }
-NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *buf) { return (ptrdiff_t)BF(buf)->off; }
+NVN(nvnBufferGetAddress, NVNbufferAddress, const NVNbuffer *buf) {
+    if (!is_valid_buf(buf) || !BF(buf)->pool || !BF(buf)->pool->mem) return 0;
+    return (NVNbufferAddress)(BF(buf)->pool->mem + BF(buf)->off);
+}
+NVN(nvnBufferMap, void *, const NVNbuffer *buf) {
+    if (!is_valid_buf(buf) || !BF(buf)->pool) return NULL;
+    return BF(buf)->pool->mem + BF(buf)->off;
+}
+NVN(nvnBufferGetSize, size_t, const NVNbuffer *buf) {
+    if (!is_valid_buf(buf)) return 0;
+    return (size_t)BF(buf)->size;
+}
+NVN(nvnBufferGetMemoryPool, NVNmemoryPool *, const NVNbuffer *buf) {
+    if (!is_valid_buf(buf)) return NULL;
+    return (NVNmemoryPool *)BF(buf)->pool;
+}
+NVN(nvnBufferGetMemoryOffset, ptrdiff_t, const NVNbuffer *buf) {
+    if (!is_valid_buf(buf)) return 0;
+    return (ptrdiff_t)BF(buf)->off;
+}
 NVN(nvnBufferFlushMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { (void)buf; (void)off; (void)n; }        // unified memory: nothing to flush
 NVN(nvnBufferInvalidateMappedRange, void, const NVNbuffer *buf, ptrdiff_t off, size_t n) { (void)buf; (void)off; (void)n; }
 

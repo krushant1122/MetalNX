@@ -4,6 +4,17 @@ Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game
 
 It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
 
+## MetalNX Control Center (macOS)
+
+For macOS on Apple Silicon (M1/M2/M3/M4), nxnative includes **MetalNX** — a native desktop utility engineered under Apple Human Interface Guidelines and the macOS 27 *"Liquid Obsidian"* aesthetic:
+
+- **1-Click Native Mac Port Studio**: Ingests base `.nsp` and update packages, extracts assets, translates Maxwell shaders to Metal, and compiles standalone native macOS `.app` applications in one click with 7-stage progress and real-time ETA telemetry.
+- **Hardware-Aware Graphics Control Center**: Form-aligned performance rails with native Apple MetalFX AI upscaling (`⌘M` in-game toggle), resolution scale (`0.50×`–`2.00×`), target frame rate locks (`30`/`60`/`uncapped`), anisotropic filtering, and async shader compilation.
+- **Library Scanning & Verified Environment**: Automatically discovers installed games with 512×512 high-res artwork, keeping undetected slots blank, with instant disk verification against `~/Library/Application Support/nxnative/<TitleID>/env.txt`.
+- **Drag-and-Drop Installer**: Ready-to-use `MetalNX-2.0.0.dmg` with standard `/Applications` installation.
+
+See [tools/launcher/README.md](tools/launcher/README.md) for the complete MetalNX User Guide.
+
 ## Acknowledgements
 
 This project is built on other people's work:
