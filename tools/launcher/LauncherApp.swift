@@ -99,7 +99,6 @@ func loadGamesDatabase() -> [GameDbEntry] {
     }
     candidates.append("\(Bundle.main.bundlePath)/Contents/Resources/games_db.json")
     candidates.append("\(fm.currentDirectoryPath)/tools/launcher/games_db.json")
-    candidates.append("/Users/krushant/nxnative/tools/launcher/games_db.json")
     candidates.append("\(fm.homeDirectoryForCurrentUser.path)/Library/Application Support/nxnative/games_db.json")
     candidates.append("/Applications/MetalNX.app/Contents/Resources/games_db.json")
 

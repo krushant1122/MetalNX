@@ -41,6 +41,7 @@ def find_repo_root():
         HERE.parent.parent,
         HERE.parent,
         HERE,
+        Path.home() / "Library/Application Support/nxnative/engine",
         Path.home() / "nxnative",
         Path.home() / "Developer/nxnative",
         Path.home() / "Projects/nxnative",
@@ -53,6 +54,34 @@ def find_repo_root():
         if (c / "scripts/build_ipa_from_nsp.py").is_file():
             return c.resolve()
 
+    return None
+
+
+def ensure_engine_components():
+    """Finds existing repo root, or automatically provisions MetalNX engine to Application Support."""
+    root = find_repo_root()
+    if root:
+        return root
+
+    target = Path.home() / "Library/Application Support/nxnative/engine"
+    if (target / "scripts/build_ipa_from_nsp.py").is_file():
+        return target
+
+    emit("PROGRESS", 0.02, "Stage 1/7: Initializing Engine", "Downloading MetalNX native engine components...", eta_sec=160, elapsed_sec=0)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "https://github.com/krushant1122/MetalNX.git", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        if (target / "scripts/build_ipa_from_nsp.py").is_file():
+            return target
+    except Exception as e:
+        emit("ERROR", 0.0, "Engine Provisioning", f"Failed to download engine components: {e}. Please clone https://github.com/krushant1122/MetalNX to ~/nxnative.")
+        return None
     return None
 
 
@@ -321,9 +350,14 @@ def main():
         env["DOTNET_ROOT_ARM64"] = str(dotnet_dir)
         env["PATH"] = f"{dotnet_dir}:{env.get('PATH', '')}"
 
-    repo_root = find_repo_root()
+    # Check clang / Xcode Command Line Tools
+    if not shutil.which("clang"):
+        emit("ERROR", 0.0, "Prerequisites", "Xcode Command Line Tools required. Open Terminal and run: xcode-select --install")
+        sys.exit(1)
+
+    repo_root = ensure_engine_components()
     if not repo_root:
-        emit("ERROR", 0.0, "Configuration", "Could not locate nxnative repository root. Please clone nxnative to ~/nxnative or set NXNATIVE_ROOT.")
+        emit("ERROR", 0.0, "Configuration", "Could not locate or download MetalNX engine. Please clone https://github.com/krushant1122/MetalNX to ~/nxnative or set NXNATIVE_ROOT.")
         sys.exit(1)
 
     build_script = repo_root / "scripts/build_ipa_from_nsp.py"

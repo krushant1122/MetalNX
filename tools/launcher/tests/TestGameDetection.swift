@@ -239,8 +239,9 @@ struct VerificationResult: Codable {
 
 func loadDbForTest() -> [GameDbEntry] {
     let fm = FileManager.default
+    let testDir = URL(fileURLWithPath: #file).deletingLastPathComponent().deletingLastPathComponent().path
     let paths = [
-        "/Users/krushant/nxnative/tools/launcher/games_db.json",
+        "\(testDir)/games_db.json",
         "\(fm.currentDirectoryPath)/tools/launcher/games_db.json",
         "/Applications/MetalNX.app/Contents/Resources/games_db.json"
     ]
@@ -405,7 +406,8 @@ try? fm.removeItem(atPath: testEnvDir)
 
 // Test 9: Python CLI Verifier Execution
 print("\n--- Test 9: Python Verifier CLI Integration ---")
-let pythonScript = "/Users/krushant/nxnative/tools/launcher/install_nsp.py"
+let testLauncherDir = URL(fileURLWithPath: #file).deletingLastPathComponent().deletingLastPathComponent().path
+let pythonScript = "\(testLauncherDir)/install_nsp.py"
 let proc = Process()
 proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
 proc.arguments = [pythonScript, "--verify", "Zelda [01007EF00011E800][v1114112].nsp"]
