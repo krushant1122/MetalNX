@@ -21,6 +21,51 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
+def ensure_python_modules():
+    """Verifies required python modules (lz4, capstone, fontTools) and auto-installs if missing."""
+    missing = []
+    try:
+        import lz4.block
+    except ImportError:
+        missing.append("lz4")
+
+    try:
+        import capstone
+    except ImportError:
+        missing.append("capstone")
+
+    try:
+        import fontTools
+    except ImportError:
+        missing.append("fonttools")
+
+    if sys.version_info < (3, 14):
+        try:
+            import backports.zstd
+        except ImportError:
+            missing.append("backports.zstd")
+
+    if not missing:
+        return True
+
+    emit("PROGRESS", 0.04, "Stage 1/7: Initializing", f"Installing Python packages: {', '.join(missing)}...", eta_sec=40)
+
+    # Try standard pip install, break-system-packages, and user install
+    pip_cmds = [
+        [sys.executable, "-m", "pip", "install", *missing],
+        [sys.executable, "-m", "pip", "install", "--break-system-packages", *missing],
+        [sys.executable, "-m", "pip", "install", "--user", *missing],
+    ]
+    for cmd in pip_cmds:
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def ensure_nx_extract(repo_root):
     """Ensures nx_extract executable is available, copying from bundle or installing dotnet if missing."""
     candidates = [
@@ -380,6 +425,9 @@ def main():
         sys.exit(0)
 
     start_time = time.time()
+
+    # Ensure required python modules
+    ensure_python_modules()
 
     # 1. Determine Keys
     keys_input = Path(args.keys) if args.keys else find_default_keys()
