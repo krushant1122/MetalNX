@@ -362,6 +362,228 @@ struct GameIconView: View {
     }
 }
 
+// MARK: - Pre-Flight Doctor & Toolchain Models
+struct PreflightDoctorReport {
+    var metalCompilerReady: Bool = false
+    var metalCompilerPath: String = ""
+    var metalCompilerMessage: String = ""
+
+    var nspSizeBytes: Int64 = 0
+    var requiredDiskBytes: Int64 = 0
+    var availableDiskBytes: Int64 = 0
+    var targetVolumeName: String = "Macintosh HD"
+    var isDiskSpaceSufficient: Bool = true
+    var deficitBytes: Int64 = 0
+
+    var recipeStatus: String = "WAITING" // "CERTIFIED", "MISMATCH", "UNTESTED", "WAITING"
+    var recipeBadge: String = "Select Game Package"
+    var recipeDetail: String = "Select a base NSP/NSZ or folder to run pre-flight compatibility checks."
+
+    var formattedNspSize: String {
+        ByteCountFormatter.string(fromByteCount: nspSizeBytes, countStyle: .file)
+    }
+    var formattedRequired: String {
+        ByteCountFormatter.string(fromByteCount: requiredDiskBytes, countStyle: .file)
+    }
+    var formattedAvailable: String {
+        ByteCountFormatter.string(fromByteCount: availableDiskBytes, countStyle: .file)
+    }
+    var formattedDeficit: String {
+        ByteCountFormatter.string(fromByteCount: deficitBytes, countStyle: .file)
+    }
+}
+
+func getVolumeAvailableBytes(for path: String) -> (available: Int64, volumeName: String) {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let resolved = path.isEmpty ? home : path
+    let url = URL(fileURLWithPath: resolved)
+    var available: Int64 = 0
+    var volName = "Macintosh HD"
+
+    if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeNameKey]) {
+        available = values.volumeAvailableCapacityForImportantUsage ?? 0
+        volName = values.volumeName ?? volName
+    } else if let attrs = try? FileManager.default.attributesOfFileSystem(forPath: url.path),
+              let free = attrs[.systemFreeSize] as? NSNumber {
+        available = free.int64Value
+    }
+    return (available, volName)
+}
+
+func getFileOrFolderSize(at path: String) -> Int64 {
+    guard !path.isEmpty else { return 0 }
+    let fm = FileManager.default
+    var isDir: ObjCBool = false
+    guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return 0 }
+    if !isDir.boolValue {
+        if let attrs = try? fm.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? NSNumber {
+            return size.int64Value
+        }
+        return 0
+    }
+    var total: Int64 = 0
+    if let enumerator = fm.enumerator(at: URL(fileURLWithPath: path), includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey], options: [.skipsHiddenFiles]) {
+        for case let fileURL as URL in enumerator {
+            if let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+               values.isRegularFile == true,
+               let size = values.fileSize {
+                total += Int64(size)
+            }
+        }
+    }
+    return total
+}
+
+func checkMetalCompilerStatus() -> (ready: Bool, path: String, message: String) {
+    let pipe = Pipe()
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+    proc.arguments = ["-f", "metal"]
+    proc.standardOutput = pipe
+    proc.standardError = pipe
+    do {
+        try proc.run()
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if proc.terminationStatus == 0 && !output.isEmpty {
+            return (true, output, "Apple Metal Compiler & Toolchain Ready")
+        }
+    } catch {}
+    return (false, "", "Metal Toolchain Missing. Run: xcodebuild -downloadComponent MetalToolchain")
+}
+
+// MARK: - Storage Management Models
+struct StorageCategoryItem: Identifiable {
+    var id: String
+    var name: String
+    var category: String
+    var description: String
+    var sizeBytes: Int64
+    var paths: [String]
+
+    var formattedSize: String {
+        ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
+    }
+}
+
+class StorageManagerViewModel: ObservableObject {
+    @Published var items: [StorageCategoryItem] = []
+    @Published var totalSizeBytes: Int64 = 0
+    @Published var isScanning: Bool = false
+    @Published var statusMessage: String? = nil
+
+    var formattedTotalSize: String {
+        ByteCountFormatter.string(fromByteCount: totalSizeBytes, countStyle: .file)
+    }
+
+    func scanStorage(customScratch: String = "") {
+        isScanning = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            var catItems: [StorageCategoryItem] = []
+
+            // 1. Build Caches & Scratch
+            var buildPaths = [
+                "\(home)/Library/Caches/nxnative",
+                "\(home)/Library/Caches/MetalNX"
+            ]
+            if !customScratch.isEmpty && FileManager.default.fileExists(atPath: customScratch) && !buildPaths.contains(customScratch) {
+                buildPaths.append(customScratch)
+            }
+            let buildSize = buildPaths.reduce(0) { $0 + getFileOrFolderSize(at: $1) }
+            catItems.append(StorageCategoryItem(
+                id: "build_cache",
+                name: "Build Caches & Scratch Files",
+                category: "Cache",
+                description: "Extracted RomFS, decompressed NSPs, and intermediate build artifacts",
+                sizeBytes: buildSize,
+                paths: buildPaths
+            ))
+
+            // 2. Engine Workspaces & Clones
+            let enginePaths = [
+                "\(home)/Library/Application Support/MetalNX/engine",
+                "\(home)/Library/Application Support/nxnative/engine"
+            ]
+            let engineSize = enginePaths.reduce(0) { $0 + getFileOrFolderSize(at: $1) }
+            catItems.append(StorageCategoryItem(
+                id: "engine_workspace",
+                name: "Engine Workspaces & Clones",
+                category: "Workspace",
+                description: "Bootstrapped engine repository clones and compiler tool scripts",
+                sizeBytes: engineSize,
+                paths: enginePaths
+            ))
+
+            // 3. Toolchains & UV Cache
+            let toolchainPaths = [
+                "\(home)/.switch",
+                "\(home)/Library/Caches/uv",
+                "\(home)/.local/share/uv"
+            ]
+            let toolchainSize = toolchainPaths.reduce(0) { $0 + getFileOrFolderSize(at: $1) }
+            catItems.append(StorageCategoryItem(
+                id: "toolchain",
+                name: "Standalone Toolchains & uv Virtual Environments",
+                category: "Toolchain",
+                description: "Bundled/cached nx_extract, dmsh_xlate, uv cache, and isolated Python packages",
+                sizeBytes: toolchainSize,
+                paths: toolchainPaths
+            ))
+
+            // 4. Telemetry & Logs
+            let logPaths = [
+                "\(home)/Library/Logs/MetalNX",
+                "\(home)/Library/Logs/nxnative"
+            ]
+            let logSize = logPaths.reduce(0) { $0 + getFileOrFolderSize(at: $1) }
+            catItems.append(StorageCategoryItem(
+                id: "logs",
+                name: "Telemetry & Crash Logs",
+                category: "Logs",
+                description: "Detailed port diagnostic reports and crash logs",
+                sizeBytes: logSize,
+                paths: logPaths
+            ))
+
+            let total = catItems.reduce(0) { $0 + $1.sizeBytes }
+
+            DispatchQueue.main.async {
+                self.items = catItems
+                self.totalSizeBytes = total
+                self.isScanning = false
+            }
+        }
+    }
+
+    func purgeCategory(id: String, customScratch: String = "") {
+        guard let item = items.first(where: { $0.id == id }) else { return }
+        for path in item.paths {
+            if FileManager.default.fileExists(atPath: path) {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
+        let freedStr = item.formattedSize
+        statusMessage = "✓ Purged \(item.name) (Freed \(freedStr))"
+        scanStorage(customScratch: customScratch)
+    }
+
+    func purgeAll(customScratch: String = "") {
+        let freedStr = formattedTotalSize
+        for item in items {
+            for path in item.paths {
+                if FileManager.default.fileExists(atPath: path) {
+                    try? FileManager.default.removeItem(atPath: path)
+                }
+            }
+        }
+        statusMessage = "✓ Cleaned all MetalNX caches & toolchains! (Freed \(freedStr))"
+        scanStorage(customScratch: customScratch)
+    }
+}
+
 // MARK: - Port Installer ViewModel
 class PortInstallerViewModel: ObservableObject {
     @Published var baseNspPath: String = ""
@@ -369,6 +591,13 @@ class PortInstallerViewModel: ObservableObject {
     @Published var folderPath: String = ""
     @Published var keysPath: String = ""
     @Published var destinationPath: String = "/Applications"
+    @Published var scratchDirPath: String = UserDefaults.standard.string(forKey: "metalnx_scratch_dir") ?? "" {
+        didSet {
+            UserDefaults.standard.set(scratchDirPath, forKey: "metalnx_scratch_dir")
+        }
+    }
+    @Published var purgeToastMessage: String? = nil
+    @Published var preflightReport: PreflightDoctorReport = PreflightDoctorReport()
     @Published var isInstalling: Bool = false
     @Published var currentStage: String = "Ready"
     @Published var currentProgress: Double = 0.0
@@ -386,15 +615,131 @@ class PortInstallerViewModel: ObservableObject {
 
     init() {
         autoDetectKeys()
+        refreshPreflightDoctor()
     }
 
     func verifyPackages(with db: [GameDbEntry]) {
         let target = !updateNspPath.isEmpty ? updateNspPath : baseNspPath
         guard !target.isEmpty else {
             verificationResult = nil
+            refreshPreflightDoctor(with: db)
             return
         }
         verificationResult = verifyPackageFile(path: target, db: db)
+        refreshPreflightDoctor(with: db)
+    }
+
+    func browseScratchDir(db: [GameDbEntry] = []) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Select Scratch & Build Directory"
+        panel.message = "Choose an external SSD or fast drive for intermediate RomFS and build caches"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            scratchDirPath = url.path
+            refreshPreflightDoctor(with: db)
+        }
+    }
+
+    func resetScratchDir(db: [GameDbEntry] = []) {
+        scratchDirPath = ""
+        UserDefaults.standard.removeObject(forKey: "metalnx_scratch_dir")
+        refreshPreflightDoctor(with: db)
+    }
+
+    func purgeBuildCache(db: [GameDbEntry] = []) {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var pathsToClean = ["\(home)/Library/Caches/nxnative", "\(home)/Library/Caches/MetalNX"]
+        if !scratchDirPath.isEmpty && FileManager.default.fileExists(atPath: scratchDirPath) && !pathsToClean.contains(scratchDirPath) {
+            pathsToClean.append(scratchDirPath)
+        }
+        var totalFreed: Int64 = 0
+        for p in pathsToClean {
+            totalFreed += getFileOrFolderSize(at: p)
+            if FileManager.default.fileExists(atPath: p) {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+        }
+        let freedStr = ByteCountFormatter.string(fromByteCount: totalFreed, countStyle: .file)
+        purgeToastMessage = "✓ Purged build cache (Freed \(freedStr))"
+        refreshPreflightDoctor(with: db)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            self.purgeToastMessage = nil
+        }
+    }
+
+    func refreshPreflightDoctor(with db: [GameDbEntry] = []) {
+        let metal = checkMetalCompilerStatus()
+        var nspSize: Int64 = 0
+        if !baseNspPath.isEmpty {
+            nspSize += getFileOrFolderSize(at: baseNspPath)
+        }
+        if !updateNspPath.isEmpty {
+            nspSize += getFileOrFolderSize(at: updateNspPath)
+        }
+        if !folderPath.isEmpty {
+            nspSize += getFileOrFolderSize(at: folderPath)
+        }
+
+        // Required disk space: 2 × total NSP size + 10 GB
+        let requiredBytes: Int64 = (2 * nspSize) + (10 * 1024 * 1024 * 1024)
+        let targetPath = !scratchDirPath.isEmpty ? scratchDirPath : (FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Caches/nxnative")
+        let (availableBytes, volName) = getVolumeAvailableBytes(for: targetPath)
+        let isSufficient = availableBytes >= requiredBytes
+        let deficit = max(0, requiredBytes - availableBytes)
+
+        var status = "WAITING"
+        var badge = "Select Game Package"
+        var detail = "Select a base NSP/NSZ or folder to run pre-flight compatibility checks."
+
+        if let v = verificationResult {
+            if v.status == "VERIFIED_SUPPORTED" {
+                status = "CERTIFIED"
+                badge = "✓ Officially Certified Build"
+                detail = "Exact match for \(v.gameName) (v\(v.detectedVersion)). Prebuilt 60 FPS patches and shader tables ready."
+            } else if v.status == "UNTESTED_VERSION" {
+                status = "MISMATCH"
+                badge = "⚠️ Version Mismatch (Tested: \(v.testedVersion))"
+                detail = "Detected version v\(v.detectedVersion) is uncertified. Provisional shader derivation will be used."
+            } else {
+                status = "UNTESTED"
+                badge = "ℹ️ Heuristic Survey Mode"
+                detail = "Title ID \(v.titleId) is not registered in database. Automatic survey and provisional port will run."
+            }
+        } else if !baseNspPath.isEmpty || !folderPath.isEmpty {
+            let target = !updateNspPath.isEmpty ? updateNspPath : baseNspPath
+            let v = verifyPackageFile(path: target, db: db)
+            if v.status == "VERIFIED_SUPPORTED" {
+                status = "CERTIFIED"
+                badge = "✓ Officially Certified Build"
+                detail = "Exact match for \(v.gameName) (v\(v.detectedVersion))."
+            } else if v.status == "UNTESTED_VERSION" {
+                status = "MISMATCH"
+                badge = "⚠️ Version Mismatch (Tested: \(v.testedVersion))"
+                detail = "Detected version v\(v.detectedVersion) is uncertified."
+            } else {
+                status = "UNTESTED"
+                badge = "ℹ️ Heuristic Survey Mode"
+                detail = "Title ID \(v.titleId) will run heuristic survey."
+            }
+        }
+
+        preflightReport = PreflightDoctorReport(
+            metalCompilerReady: metal.ready,
+            metalCompilerPath: metal.path,
+            metalCompilerMessage: metal.message,
+            nspSizeBytes: nspSize,
+            requiredDiskBytes: requiredBytes,
+            availableDiskBytes: availableBytes,
+            targetVolumeName: volName,
+            isDiskSpaceSufficient: isSufficient,
+            deficitBytes: deficit,
+            recipeStatus: status,
+            recipeBadge: badge,
+            recipeDetail: detail
+        )
     }
 
     func autoDetectKeys() {
@@ -498,7 +843,7 @@ class PortInstallerViewModel: ObservableObject {
         }
     }
 
-    func browseFolder() {
+    func browseFolder(db: [GameDbEntry] = []) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -511,6 +856,7 @@ class PortInstallerViewModel: ObservableObject {
             updateNspPath = ""
             isCompleted = false
             errorMessage = nil
+            refreshPreflightDoctor(with: db)
         }
     }
 
@@ -601,6 +947,10 @@ class PortInstallerViewModel: ObservableObject {
 
         if destinationPath != "/Applications" && !destinationPath.isEmpty {
             args.append(contentsOf: ["--out", destinationPath])
+        }
+
+        if !scratchDirPath.isEmpty {
+            args.append(contentsOf: ["--work-dir", scratchDirPath])
         }
 
         process.arguments = args
@@ -723,7 +1073,7 @@ class PortInstallerViewModel: ObservableObject {
         return """
 ### MetalNX Port Diagnostic & Crash Report
 - **Date**: \(dateStr)
-- **App Version**: MetalNX v2.1.1
+- **App Version**: MetalNX v2.2.0
 - **OS**: macOS \(osVersion)
 - **Hardware**: \(chipName) (\(memGB) RAM)
 - **Game**: \(targetGame) (`\(titleId)`)
@@ -781,7 +1131,7 @@ class PortInstallerViewModel: ObservableObject {
             let truncatedLogs = consoleLogs.suffix(20).joined(separator: "\n")
             body = """
 ### MetalNX Port Diagnostic & Crash Report
-- **App Version**: MetalNX v2.1.1
+- **App Version**: MetalNX v2.2.0
 - **Game**: \(verificationResult?.gameName ?? "Unknown") (`\(verificationResult?.titleId ?? "")`)
 - **Failing Stage**: \(currentStage)
 - **Failure Reason**: \(errorMsg)
@@ -1302,6 +1652,7 @@ struct ContentView: View {
     @AppStorage("hasCompletedPermissionSetup") var hasCompletedPermissionSetup: Bool = false
     @State private var showingPermissionSheet: Bool = false
     @State private var showingConfigSheet: Bool = false
+    @State private var showingStorageSheet: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1358,6 +1709,28 @@ struct ContentView: View {
                             .font(.system(size: 11, weight: .medium))
                     }
                     .foregroundColor(Color.iceBlue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.materialThinElevated)
+                    .cornerRadius(6)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.hairlineSpecular, lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+
+                Button(action: {
+                    showingStorageSheet = true
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "internaldrive.badge.gearshape")
+                            .font(.system(size: 11, weight: .medium))
+                        Text("Storage")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(Color.accentViolet)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(Color.materialThinElevated)
@@ -1570,6 +1943,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $vm.showingDatabaseSheet) {
             CompatibilityDatabaseSheet(games: vm.gamesDatabase, isPresented: $vm.showingDatabaseSheet)
+        }
+        .sheet(isPresented: $showingStorageSheet) {
+            StorageManagerSheet(installerVm: installerVm, isPresented: $showingStorageSheet)
         }
     }
 }
@@ -2634,6 +3010,194 @@ struct LiquidRecipesView: View {
     }
 }
 
+// MARK: - Storage & Toolchain Manager Sheet
+struct StorageManagerSheet: View {
+    @ObservedObject var installerVm: PortInstallerViewModel
+    @Binding var isPresented: Bool
+    @StateObject private var storageVm = StorageManagerViewModel()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header Bar
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Storage & Toolchain Manager")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("Inspect, manage, and cleanly purge temporary build caches, engine workspaces, and toolchains")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color.white.opacity(0.55))
+                }
+                Spacer()
+                Button(action: { isPresented = false }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(Color.white.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+            .padding(18)
+            .background(.ultraThinMaterial)
+
+            Divider().opacity(0.12)
+
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 16) {
+                    // Hero Total Footprint Card
+                    HStack(spacing: 16) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.accentViolet.opacity(0.15))
+                                .frame(width: 50, height: 50)
+                            Image(systemName: "internaldrive.fill")
+                                .font(.system(size: 22))
+                                .foregroundColor(Color.accentViolet)
+                        }
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Total MetalNX Storage Footprint")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(Color.white.opacity(0.6))
+                            Text(storageVm.formattedTotalSize)
+                                .font(.system(size: 24, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                        }
+
+                        Spacer()
+
+                        Button(action: {
+                            storageVm.scanStorage(customScratch: installerVm.scratchDirPath)
+                        }) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "arrow.clockwise")
+                                Text("Rescan")
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color.white.opacity(0.85))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.08))
+                            .cornerRadius(6)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                    }
+                    .padding(14)
+                    .background(Color.materialThinElevated)
+                    .cornerRadius(12)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                    )
+
+                    // Storage Category Breakdown
+                    VStack(spacing: 10) {
+                        ForEach(storageVm.items) { item in
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(item.name)
+                                            .font(.system(size: 12.5, weight: .semibold))
+                                            .foregroundColor(.white)
+                                        Spacer()
+                                        Text(item.formattedSize)
+                                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                            .foregroundColor(item.sizeBytes > 0 ? Color.iceBlue : Color.white.opacity(0.35))
+                                    }
+                                    Text(item.description)
+                                        .font(.system(size: 10.5))
+                                        .foregroundColor(Color.white.opacity(0.55))
+                                }
+
+                                Button(action: {
+                                    storageVm.purgeCategory(id: item.id, customScratch: installerVm.scratchDirPath)
+                                }) {
+                                    Text("Purge")
+                                        .font(.system(size: 10.5, weight: .medium))
+                                        .foregroundColor(Color.accentCoral)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.accentCoral.opacity(0.12))
+                                        .cornerRadius(5)
+                                }
+                                .buttonStyle(.plain)
+                                .focusable(false)
+                                .disabled(item.sizeBytes == 0)
+                                .opacity(item.sizeBytes == 0 ? 0.3 : 1.0)
+                            }
+                            .padding(12)
+                            .background(Color.materialUltraThin)
+                            .cornerRadius(10)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color.hairlineSpecular, lineWidth: 0.5)
+                            )
+                        }
+                    }
+
+                    if let status = storageVm.statusMessage {
+                        Text(status)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color.mintGreen)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(Color.mintGreen.opacity(0.1))
+                            .cornerRadius(6)
+                    }
+
+                    // Bulk Action Buttons
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            storageVm.purgeCategory(id: "build_cache", customScratch: installerVm.scratchDirPath)
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "trash")
+                                Text("Purge Build Caches Only")
+                            }
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 34)
+                            .background(Color.materialThinElevated)
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+
+                        Button(action: {
+                            storageVm.purgeAll(customScratch: installerVm.scratchDirPath)
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "trash.fill")
+                                Text("Wipe All & Clean Uninstall")
+                            }
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 34)
+                            .background(Color.accentCoral)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                    }
+                }
+                .padding(18)
+            }
+        }
+        .frame(width: 580, height: 500)
+        .background(Color.obsidianBase)
+        .onAppear {
+            storageVm.scanStorage(customScratch: installerVm.scratchDirPath)
+        }
+    }
+}
+
 // MARK: - Liquid 1-Click Port Installer View
 struct LiquidPortInstallerView: View {
     @ObservedObject var installerVm: PortInstallerViewModel
@@ -2752,7 +3316,7 @@ struct LiquidPortInstallerView: View {
                             .foregroundColor(Color.white.opacity(0.45))
                         Spacer()
                         Button(installerVm.folderPath.isEmpty ? "Browse Game Folder..." : (installerVm.folderPath as NSString).lastPathComponent) {
-                            installerVm.browseFolder()
+                            installerVm.browseFolder(db: vm.gamesDatabase)
                         }
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundColor(Color.accentAmber)
@@ -2954,6 +3518,86 @@ struct LiquidPortInstallerView: View {
                 }
             }
 
+            // Step 4: Build Scratch & Intermediate Cache
+            LiquidGroupWell(title: "4. Build Scratch & Intermediate Cache (External SSD Recommended)", icon: "internaldrive.badge.gearshape") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: installerVm.scratchDirPath.hasPrefix("/Volumes") ? "externaldrive.fill" : "internaldrive.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(installerVm.scratchDirPath.hasPrefix("/Volumes") ? Color.mintGreen : Color.iceBlue)
+
+                        if installerVm.scratchDirPath.isEmpty {
+                            Text("Default: ~/Library/Caches/nxnative")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundColor(Color.white.opacity(0.65))
+                                .lineLimit(1)
+                        } else {
+                            Text(installerVm.scratchDirPath)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Button("Change...") {
+                            installerVm.browseScratchDir(db: vm.gamesDatabase)
+                        }
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.iceBlue)
+                        .buttonStyle(.plain)
+                        .focusable(false)
+
+                        if !installerVm.scratchDirPath.isEmpty {
+                            Button("Default") {
+                                installerVm.resetScratchDir(db: vm.gamesDatabase)
+                            }
+                            .font(.system(size: 10))
+                            .foregroundColor(Color.white.opacity(0.45))
+                            .buttonStyle(.plain)
+                            .focusable(false)
+                        }
+
+                        Button(action: {
+                            installerVm.purgeBuildCache(db: vm.gamesDatabase)
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 10))
+                                Text("Purge Cache")
+                                    .font(.system(size: 10.5, weight: .medium))
+                            }
+                            .foregroundColor(Color.accentCoral)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.accentCoral.opacity(0.12))
+                            .cornerRadius(5)
+                        }
+                        .buttonStyle(.plain)
+                        .focusable(false)
+                    }
+
+                    // Volume Free Space Telemetry
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(installerVm.preflightReport.isDiskSpaceSufficient ? Color.mintGreen : Color.accentAmber)
+                            .frame(width: 5, height: 5)
+                        Text("\(installerVm.preflightReport.targetVolumeName): \(installerVm.preflightReport.formattedAvailable) free")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Color.white.opacity(0.55))
+
+                        Spacer()
+
+                        if let toast = installerVm.purgeToastMessage {
+                            Text(toast)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(Color.mintGreen)
+                                .transition(.opacity)
+                        }
+                    }
+                }
+            }
+
             // Real-Time Progress & Realistic ETA Card
             if installerVm.isInstalling {
                 VStack(alignment: .leading, spacing: 8) {
@@ -3127,6 +3771,111 @@ struct LiquidPortInstallerView: View {
                         .stroke(Color.accentCoral.opacity(0.35), lineWidth: 0.5)
                 )
             }
+
+            // Pre-Flight Toolchain Doctor Card
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "stethoscope")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(Color.iceBlue)
+                    Text("Pre-Flight Toolchain Doctor")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Text(installerVm.preflightReport.isDiskSpaceSufficient && installerVm.preflightReport.metalCompilerReady ? "READY" : "ATTENTION NEEDED")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundColor(installerVm.preflightReport.isDiskSpaceSufficient && installerVm.preflightReport.metalCompilerReady ? Color.mintGreen : Color.accentAmber)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background((installerVm.preflightReport.isDiskSpaceSufficient && installerVm.preflightReport.metalCompilerReady ? Color.mintGreen : Color.accentAmber).opacity(0.15))
+                        .cornerRadius(4)
+                }
+
+                Divider().opacity(0.1)
+
+                // Check 1: Xcode Metal Toolchain
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: installerVm.preflightReport.metalCompilerReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(installerVm.preflightReport.metalCompilerReady ? Color.mintGreen : Color.accentCoral)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack {
+                            Text("Apple Metal Toolchain (MSL)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white)
+                            Spacer()
+                            Text(installerVm.preflightReport.metalCompilerReady ? "Installed" : "Missing")
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundColor(installerVm.preflightReport.metalCompilerReady ? Color.mintGreen : Color.accentCoral)
+                        }
+                        Text(installerVm.preflightReport.metalCompilerMessage)
+                            .font(.system(size: 10))
+                            .foregroundColor(Color.white.opacity(0.6))
+                    }
+                }
+
+                Divider().opacity(0.08)
+
+                // Check 2: Disk Space Available vs. Required (2x NSP + 10 GB)
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: installerVm.preflightReport.isDiskSpaceSufficient ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(installerVm.preflightReport.isDiskSpaceSufficient ? Color.mintGreen : Color.accentAmber)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack {
+                            Text("Scratch Space: \(installerVm.preflightReport.targetVolumeName)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white)
+                            Spacer()
+                            Text("\(installerVm.preflightReport.formattedAvailable) free / \(installerVm.preflightReport.formattedRequired) req")
+                                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                                .foregroundColor(installerVm.preflightReport.isDiskSpaceSufficient ? Color.mintGreen : Color.accentAmber)
+                        }
+                        if installerVm.preflightReport.isDiskSpaceSufficient {
+                            Text("Sufficient scratch capacity. Room for RomFS extraction, intermediate NSPs, and shader bases.")
+                                .font(.system(size: 10))
+                                .foregroundColor(Color.white.opacity(0.6))
+                        } else {
+                            Text("Low disk space on \(installerVm.preflightReport.targetVolumeName)! Deficit: \(installerVm.preflightReport.formattedDeficit). Set an External SSD in Step 4 to prevent mid-compile aborts.")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(Color.accentAmber)
+                        }
+                    }
+                }
+
+                Divider().opacity(0.08)
+
+                // Check 3: Database Recipe & Version Match
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: installerVm.preflightReport.recipeStatus == "CERTIFIED" ? "checkmark.circle.fill" : (installerVm.preflightReport.recipeStatus == "MISMATCH" ? "exclamationmark.triangle.fill" : "info.circle.fill"))
+                        .font(.system(size: 14))
+                        .foregroundColor(installerVm.preflightReport.recipeStatus == "CERTIFIED" ? Color.mintGreen : (installerVm.preflightReport.recipeStatus == "MISMATCH" ? Color.accentAmber : Color.iceBlue))
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack {
+                            Text("72-Game Recipe & Version Check")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.white)
+                            Spacer()
+                            Text(installerVm.preflightReport.recipeBadge)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundColor(installerVm.preflightReport.recipeStatus == "CERTIFIED" ? Color.mintGreen : (installerVm.preflightReport.recipeStatus == "MISMATCH" ? Color.accentAmber : Color.iceBlue))
+                        }
+                        Text(installerVm.preflightReport.recipeDetail)
+                            .font(.system(size: 10))
+                            .foregroundColor(Color.white.opacity(0.6))
+                    }
+                }
+            }
+            .padding(12)
+            .background(Color.materialThinElevated)
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+            )
 
             // Primary Build Button
             HStack(spacing: 12) {

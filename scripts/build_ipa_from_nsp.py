@@ -540,7 +540,7 @@ def scan_nsps(nsp_dir):
 NSZ_MAIN = "import sys; sys.argv[0] = 'nsz'; from nsz import main; main()"   # the nsz tool of the Python running this file (Spyder does not have its bin folder on PATH)
 
 
-def decompress_nsz(nsp_dir, app, fam, keys, env):
+def decompress_nsz(nsp_dir, app, fam, keys, env, work_dir=None):
     """NSZ / XCZ files of fam converted once with nsz -D into <title ID>_build/nsp/; returns fam with the converted files in their place. nsz writes into an empty temporary folder
     and the file is moved into nsp/ only when nsz exits 0, so a partial one is never taken for a whole one; a conversion is reused while its source has the same name, size and
     modification time. nsz -D prints an NCA hash mismatch but goes on and exits 0: nx_extract's hash check catches a damaged file (ALLOW_DAMAGED)"""
@@ -549,7 +549,9 @@ def decompress_nsz(nsp_dir, app, fam, keys, env):
     if not todo: return fam
     if importlib.util.find_spec('nsz') is None:
         raise BuildError(f'NSZ / XCZ files need the nsz tool in the current Python ({sys.executable}): pip install nsz')
-    out = nsp_dir.absolute() / f'{app:016X}_build' / 'nsp'; logs, tmp = out.parent / 'logs', out / 'partial'
+    base_build = Path(work_dir).resolve() if work_dir else (nsp_dir.absolute() / f'{app:016X}_build')
+    out = (base_build if base_build.name.endswith('_build') else (base_build / f'{app:016X}_build')) / 'nsp'
+    logs, tmp = out.parent / 'logs', out / 'partial'
     PROG.plan(1); PROG.stage('decompress NSZ', done=0, total=len(todo))
     conv, made = {}, 0
     for i, p in enumerate(todo):
@@ -1857,6 +1859,7 @@ def parse_args(argv):
     ap.add_argument('--profile-out', help='where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
     ap.add_argument('--provisional', action='store_true', help='build from a provisional profile even when dm/games has one for the game (tests the guesses)')
     ap.add_argument('--no-heap-check', action='store_true', help='a provisional profile: skip the heap check on the Mac (the alias / heap split stays a guess)')
+    ap.add_argument('--work-dir', help='folder for intermediate build files and extracted RomFS (default: <NSP folder>/<title ID>_build)')
     ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'json', 'off'), help='stage lines on the console: bar = one line per stage, redrawn in place; lines = a plain line every BEAT seconds; json = newline-delimited JSON events (no prompts); off = only each stage\'s start and end '
                     '(default: the PROGRESS setting; auto = bar in a terminal or Spyder, lines when the output goes to a file or a pipe)')
     return ap.parse_args(argv)
@@ -1927,7 +1930,8 @@ def main(args=None):
     env.setdefault('J', str(os.cpu_count() or 8))   # shader_split.py's and dmsh_build.py's workers (their default is 8)
     py = sys.executable
     app, fam = scan_nsps(nsp_dir)
-    fam = decompress_nsz(nsp_dir, app, fam, keys, env)
+    work_dir_arg = Path(os.path.expanduser(args.work_dir)).resolve() if getattr(args, 'work_dir', None) else None
+    fam = decompress_nsz(nsp_dir, app, fam, keys, env, work_dir=work_dir_arg)
     force =args.provisional or PROVISIONAL   # a provisional profile even when dm/games has one (testing the guesses)
     g, provisional, shadowed = None if force else gamemod.by_title(app), False, False
     alias = None if force or g else same_build(nsp_dir, app, fam, keys, repo, env)   # a known build under another title ID: packed from a profile derived from that build's
@@ -1971,7 +1975,11 @@ def main(args=None):
     out_ipa = Path(os.path.expanduser(args.out or OUT_IPA)).resolve() if (args.out or OUT_IPA) else nsp_dir / g.get('ipa')   # by default in the NSP folder, next to the NSPs and <id>_build/
     if shadowed and not (args.out or OUT_IPA): out_ipa = out_ipa.with_name(out_ipa.stem + '-provisional.ipa')   # never over the IPA of the game's real profile
     if mac_pack and (args.out or OUT_IPA) and out_ipa.suffix != '.app': raise BuildError(f'the Mac app (-o / OUT_IPA) must end in .app: {out_ipa}')
-    work = nsp_dir / f'{g.id}_build'
+    if getattr(args, 'work_dir', None):
+        custom_work = Path(os.path.expanduser(args.work_dir)).resolve()
+        work = custom_work if custom_work.name.endswith('_build') else (custom_work / f'{g.id}_build')
+    else:
+        work = nsp_dir / f'{g.id}_build'
     project = work / 'xcode/DmIOS.xcodeproj'
     workspace = Path(os.path.expanduser(args.xcode_workspace or XCODE_WORKSPACE)).resolve() if (args.xcode_workspace or XCODE_WORKSPACE) else nsp_dir.parent / 'NxNative.xcworkspace'
     if prepare_xcode and workspace.suffix != '.xcworkspace': raise BuildError('--xcode-workspace must end in .xcworkspace')

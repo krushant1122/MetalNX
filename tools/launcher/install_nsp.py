@@ -479,6 +479,200 @@ def verify_file(file_path):
         }
 
 
+def get_dir_size(p: Path) -> int:
+    if not p.exists():
+        return 0
+    if p.is_file():
+        try:
+            return p.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    try:
+        for root, _, files in os.walk(p):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    if not os.path.islink(fp):
+                        total += os.path.getsize(fp)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def get_storage_breakdown(custom_scratch=None):
+    items = []
+
+    # 1. Build Caches & Staging
+    cache_dirs = [
+        Path.home() / "Library/Caches/nxnative",
+        Path.home() / "Library/Caches/MetalNX",
+    ]
+    if custom_scratch and Path(custom_scratch).is_dir():
+        cache_dirs.append(Path(custom_scratch))
+
+    build_size = sum(get_dir_size(d) for d in cache_dirs)
+    items.append({
+        "id": "build_cache",
+        "name": "Build Caches & Scratch Files",
+        "category": "Cache",
+        "description": "Extracted RomFS, decompressed NSPs, and intermediate build artifacts",
+        "size_bytes": build_size,
+        "paths": [str(d) for d in cache_dirs if d.exists()]
+    })
+
+    # 2. Engine Workspace & Clones
+    engine_dirs = [
+        Path.home() / "Library/Application Support/MetalNX/engine",
+        Path.home() / "Library/Application Support/nxnative/engine",
+    ]
+    engine_size = sum(get_dir_size(d) for d in engine_dirs)
+    items.append({
+        "id": "engine_workspace",
+        "name": "Engine Workspaces & Clones",
+        "category": "Workspace",
+        "description": "Bootstrapped nxnative engine repository clones and build scripts",
+        "size_bytes": engine_size,
+        "paths": [str(d) for d in engine_dirs if d.exists()]
+    })
+
+    # 3. Python & Toolchains
+    toolchain_dirs = [
+        Path.home() / ".switch",
+        Path.home() / "Library/Caches/uv",
+        Path.home() / ".local/share/uv",
+    ]
+    toolchain_size = sum(get_dir_size(d) for d in toolchain_dirs)
+    items.append({
+        "id": "toolchain",
+        "name": "Standalone Toolchains & uv Virtual Environments",
+        "category": "Toolchain",
+        "description": "Bundled/cached nx_extract, dmsh_xlate, uv cache, and isolated Python packages",
+        "size_bytes": toolchain_size,
+        "paths": [str(d) for d in toolchain_dirs if d.exists()]
+    })
+
+    # 4. Telemetry & Crash Logs
+    log_dirs = [
+        Path.home() / "Library/Logs/MetalNX",
+        Path.home() / "Library/Logs/nxnative",
+    ]
+    log_size = sum(get_dir_size(d) for d in log_dirs)
+    items.append({
+        "id": "logs",
+        "name": "Telemetry & Crash Logs",
+        "category": "Logs",
+        "description": "Detailed port diagnostic reports and crash telemetry",
+        "size_bytes": log_size,
+        "paths": [str(d) for d in log_dirs if d.exists()]
+    })
+
+    total_bytes = sum(it["size_bytes"] for it in items)
+    return {
+        "items": items,
+        "total_bytes": total_bytes,
+        "total_mb": round(total_bytes / (1024 * 1024), 2),
+        "total_gb": round(total_bytes / (1024 * 1024 * 1024), 2),
+    }
+
+
+def purge_storage(category="all", custom_scratch=None):
+    info = get_storage_breakdown(custom_scratch)
+    freed_bytes = 0
+    cleaned_paths = []
+
+    for item in info["items"]:
+        if category != "all" and item["id"] != category:
+            continue
+        for p_str in item["paths"]:
+            p = Path(p_str)
+            if p.exists():
+                try:
+                    item_size = get_dir_size(p)
+                    freed_bytes += item_size
+                    if p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink(missing_ok=True)
+                    cleaned_paths.append(str(p))
+                except Exception:
+                    pass
+    return {
+        "status": "SUCCESS",
+        "category": category,
+        "freed_bytes": freed_bytes,
+        "freed_mb": round(freed_bytes / (1024 * 1024), 2),
+        "freed_gb": round(freed_bytes / (1024 * 1024 * 1024), 2),
+        "cleaned_paths": cleaned_paths
+    }
+
+
+def check_metal_toolchain():
+    try:
+        res = subprocess.run(["/usr/bin/xcrun", "-f", "metal"], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0 and res.stdout.strip():
+            return {
+                "ready": True,
+                "path": res.stdout.strip(),
+                "message": "Apple Metal Compiler & Toolchain ready"
+            }
+    except Exception:
+        pass
+    return {
+        "ready": False,
+        "path": "",
+        "message": "Metal Toolchain missing. Run: xcodebuild -downloadComponent MetalToolchain"
+    }
+
+
+def run_doctor(base_path=None, update_path=None, folder_path=None, scratch_path=None):
+    metal = check_metal_toolchain()
+
+    total_nsp_bytes = 0
+    if base_path and Path(base_path).is_file():
+        total_nsp_bytes += Path(base_path).stat().st_size
+    if update_path and Path(update_path).is_file():
+        total_nsp_bytes += Path(update_path).stat().st_size
+    if folder_path and Path(folder_path).is_dir():
+        for ext in ["*.nsp", "*.nsz", "*.xci", "*.xcz"]:
+            for f in Path(folder_path).glob(ext):
+                total_nsp_bytes += f.stat().st_size
+
+    # Required space: (2 * total_nsp_bytes) + 10 GB
+    required_bytes = (2 * total_nsp_bytes) + (10 * 1024 * 1024 * 1024)
+
+    target_vol_path = Path(scratch_path).resolve() if scratch_path else (Path.home() / "Library/Caches/nxnative")
+    target_vol_path.mkdir(parents=True, exist_ok=True)
+
+    _, _, disk_free = shutil.disk_usage(str(target_vol_path))
+    is_sufficient = disk_free >= required_bytes
+
+    check_target = update_path or base_path
+    if check_target and Path(check_target).is_file():
+        v_res = verify_file(check_target)
+    else:
+        v_res = None
+
+    return {
+        "metal_toolchain": metal,
+        "storage": {
+            "target_path": str(target_vol_path),
+            "nsp_bytes": total_nsp_bytes,
+            "nsp_gb": round(total_nsp_bytes / (1024**3), 2),
+            "required_bytes": required_bytes,
+            "required_gb": round(required_bytes / (1024**3), 2),
+            "available_bytes": disk_free,
+            "available_gb": round(disk_free / (1024**3), 2),
+            "is_sufficient": is_sufficient,
+            "deficit_gb": max(0.0, round((required_bytes - disk_free) / (1024**3), 2)),
+        },
+        "recipe_match": v_res,
+        "ready_to_compile": metal["ready"] and (is_sufficient or total_nsp_bytes == 0)
+    }
+
+
 def preseed_verified_recipes(title_id, target_fps=60):
     """Writes authoritative verified settings to env.txt upon successful porting."""
     if not title_id:
@@ -513,6 +707,11 @@ def main():
     parser.add_argument("--folder", help="Folder containing NSPs")
     parser.add_argument("--keys", help="Path to prod.keys (defaults to auto-detect)")
     parser.add_argument("--out", help="Output .app directory (default: /Applications)")
+    parser.add_argument("--work-dir", help="Scratch/build directory for intermediate files and temporary RomFS")
+    parser.add_argument("--purge-cache", action="store_true", help="Purge temporary build caches and intermediate files")
+    parser.add_argument("--purge-category", default="all", choices=["all", "build_cache", "engine_workspace", "toolchain", "logs"], help="Category of storage to purge")
+    parser.add_argument("--storage-info", action="store_true", help="Print detailed storage usage breakdown in JSON")
+    parser.add_argument("--doctor", action="store_true", help="Run pre-flight toolchain doctor and disk space check")
     parser.add_argument("--verify", help="Inspect and verify an NSP/NSZ file for compatibility")
     parser.add_argument("--list-db", action="store_true", help="Print all verified games in JSON")
     args = parser.parse_args()
@@ -527,6 +726,24 @@ def main():
     if args.list_db:
         db = load_games_db()
         print(json.dumps(list(db.values()), indent=2))
+        sys.exit(0)
+
+    # Mode 3: Pre-Flight Doctor Check
+    if args.doctor:
+        doc = run_doctor(base_path=args.base, update_path=args.update, folder_path=args.folder, scratch_path=args.work_dir)
+        print(json.dumps(doc, indent=2))
+        sys.exit(0)
+
+    # Mode 4: Storage Info
+    if args.storage_info:
+        info = get_storage_breakdown(args.work_dir)
+        print(json.dumps(info, indent=2))
+        sys.exit(0)
+
+    # Mode 5: Purge Storage Caches
+    if args.purge_cache:
+        res = purge_storage(category=args.purge_category, custom_scratch=args.work_dir)
+        print(json.dumps(res, indent=2))
         sys.exit(0)
 
     start_time = time.time()
@@ -561,7 +778,10 @@ def main():
                     _, b_tid, _, _ = extract_title_and_version(f)
                     primary_title_id = b_tid
     elif args.base and Path(args.base).is_file():
-        cache_base = Path.home() / "Library/Caches/nxnative"
+        if args.work_dir:
+            cache_base = Path(args.work_dir).resolve() / "stage"
+        else:
+            cache_base = Path.home() / "Library/Caches/nxnative"
         cache_base.mkdir(parents=True, exist_ok=True)
         staging_dir = Path(tempfile.mkdtemp(prefix="port_stage_", dir=cache_base))
         nsp_dir = staging_dir
@@ -742,6 +962,11 @@ def main():
             "--platform", "mac-app",
             "--progress", "lines",
         ]
+
+    if args.work_dir:
+        cmd.extend(["--work-dir", str(Path(args.work_dir).resolve())])
+    if args.out:
+        cmd.extend(["-o", str(Path(args.out).resolve())])
 
     # Realistic stage milestone weights
     stage_progression = [

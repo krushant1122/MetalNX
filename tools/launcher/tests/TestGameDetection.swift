@@ -496,6 +496,99 @@ testCrashProc.waitUntilExit()
 let crashOutput = String(data: crashPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 assertTrue(crashOutput.contains("CRASH_REPORT_TEST_PASSED"), "Diagnostic crash report generation and telemetry persistence verified")
 
+// Test 12: Configurable Scratch / Build Directory & Cache Purging
+print("\n--- Test 12: Configurable Scratch / Build Directory & Cache Purging ---")
+let testScratchProc = Process()
+testScratchProc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+testScratchProc.arguments = ["-c", """
+import sys, tempfile, os
+from pathlib import Path
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+
+with tempfile.TemporaryDirectory(prefix="metalnx_test_scratch_") as tmpdir:
+    test_scratch = Path(tmpdir)
+    # Simulate staging dummy RomFS and cache
+    dummy_file = test_scratch / "dummy_build/RomFS.bin"
+    dummy_file.parent.mkdir(parents=True)
+    dummy_file.write_bytes(b"A" * 1024 * 1024)
+    assert dummy_file.is_file(), "Dummy scratch file written"
+
+    info = install_nsp.get_storage_breakdown(custom_scratch=str(test_scratch))
+    assert info["total_bytes"] >= 1024 * 1024, "Storage breakdown detects scratch files"
+
+    res = install_nsp.purge_storage(category="build_cache", custom_scratch=str(test_scratch))
+    assert res["status"] == "SUCCESS", "Purge returns success"
+    assert not dummy_file.exists(), "Scratch file purged"
+    print("SCRATCH_PURGE_TEST_PASSED")
+"""]
+let scratchPipe = Pipe()
+testScratchProc.standardOutput = scratchPipe
+try? testScratchProc.run()
+testScratchProc.waitUntilExit()
+let scratchOutput = String(data: scratchPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(scratchOutput.contains("SCRATCH_PURGE_TEST_PASSED"), "Configurable scratch directory and cache purging verified")
+
+// Test 13: Pre-Flight Toolchain Doctor & Required Space Calculation
+print("\n--- Test 13: Pre-Flight Toolchain Doctor & Required Space (2x NSP + 10 GB) ---")
+let testDoctorProc = Process()
+testDoctorProc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+testDoctorProc.arguments = ["-c", """
+import sys, tempfile
+from pathlib import Path
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+
+with tempfile.TemporaryDirectory(prefix="metalnx_doc_") as tmpdir:
+    dummy_nsp = Path(tmpdir) / "test [0100152000022000][v1441792].nsp"
+    dummy_nsp.write_bytes(b"0" * (1024 * 1024 * 100)) # 100 MB
+
+    doc = install_nsp.run_doctor(base_path=str(dummy_nsp), scratch_path=tmpdir)
+    assert "metal_toolchain" in doc, "Metal toolchain reported"
+    assert "storage" in doc, "Storage reported"
+    assert doc["storage"]["nsp_bytes"] == 100 * 1024 * 1024, "Exact NSP size computed"
+    expected_req = (2 * 100 * 1024 * 1024) + (10 * 1024 * 1024 * 1024)
+    assert doc["storage"]["required_bytes"] == expected_req, f"Required is 2x NSP + 10 GB (expected {expected_req}, got {doc['storage']['required_bytes']})"
+    assert doc["recipe_match"] is not None, "Recipe checked"
+    assert doc["recipe_match"]["status"] == "VERIFIED_SUPPORTED", "MK8D v1441792 is certified"
+    print("DOCTOR_TEST_PASSED")
+"""]
+let docPipe = Pipe()
+testDoctorProc.standardOutput = docPipe
+try? testDoctorProc.run()
+testDoctorProc.waitUntilExit()
+let docOutput = String(data: docPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(docOutput.contains("DOCTOR_TEST_PASSED"), "Toolchain Doctor checks, recipe matching, and 2x NSP + 10 GB disk calculation verified")
+
+// Test 14: Storage & Toolchain Manager Scan & Purge
+print("\n--- Test 14: Storage & Toolchain Manager Scan & Purge ---")
+let testStorageProc = Process()
+testStorageProc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+testStorageProc.arguments = ["-c", """
+import sys
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+
+info = install_nsp.get_storage_breakdown()
+assert len(info["items"]) == 4, "4 primary storage categories reported"
+category_ids = {it["id"] for it in info["items"]}
+assert "build_cache" in category_ids, "Build cache category present"
+assert "engine_workspace" in category_ids, "Engine workspace category present"
+assert "toolchain" in category_ids, "Toolchain category present"
+assert "logs" in category_ids, "Logs category present"
+
+# Test selective purge of logs category
+res = install_nsp.purge_storage(category="logs")
+assert res["status"] == "SUCCESS", "Selective purge succeeded"
+print("STORAGE_MANAGER_TEST_PASSED")
+"""]
+let storagePipe = Pipe()
+testStorageProc.standardOutput = storagePipe
+try? testStorageProc.run()
+testStorageProc.waitUntilExit()
+let storageOutput = String(data: storagePipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(storageOutput.contains("STORAGE_MANAGER_TEST_PASSED"), "Storage Manager itemized breakdown and category purge verified")
+
 // Summary
 print("\n==================================================")
 print("TEST SUMMARY: \(testsPassed)/\(testsRun) passed (\(testsFailed) failed)")
