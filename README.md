@@ -10,10 +10,10 @@
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20M2%20M3%20M4-blue?style=flat-square&logo=apple)](https://www.apple.com/mac/)
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=flat-square&logo=swift)](https://swift.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-51%2F51_passing-brightgreen?style=flat-square)](#automated-tests)
-[![Release](https://img.shields.io/badge/Download-v2.0.8_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.8)
+[![Tests](https://img.shields.io/badge/Tests-54%2F54_passing-brightgreen?style=flat-square)](#automated-tests)
+[![Release](https://img.shields.io/badge/Download-v2.2.1_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.1)
 
-[**Download MetalNX-2.0.8.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.8) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
+[**Download MetalNX-2.2.1.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.1) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
 
 </div>
 
@@ -90,6 +90,19 @@ Automatically detects your Mac and recommends settings:
 - **MacBook Air (fanless)** → conservative `0.85×` scale, MetalFX Balanced, 60 FPS cap to prevent thermal throttling
 - **Mac Pro / Studio / Max / Ultra** → `1.00×–1.50×`, uncapped FPS, 16× AF
 
+### 🛡️ Staging Directory Safety & Sandbox Guardrails
+- **Automated Sandbox Enclosure**: All intermediate extraction buffers, RomFS caches, and compiled shaders are isolated inside a dedicated `MetalNX_Workspace` subfolder.
+- **Protected System & User Directories**: Strict hardware blacklist blocks modification or cleaning of personal directories (`/`, `~/Desktop`, `~/Documents`, `~/Downloads`, `/Volumes/<Drive>`).
+- **macOS Trash Recycling**: Purging cache or toolchains recycles items directly into the macOS Trash Bin via `NSWorkspace.shared.recycle` and AppleScript Finder Trash — never permanently unlinking files without user awareness.
+- **Confirmation Modals**: Every cache clearing operation requires explicit user confirmation.
+
+#### Emergency Data Recovery Guide (If Files Were Unlinked on Earlier Versions)
+If a raw folder was unlinked using an older tool:
+1. **Halt all write operations** on the Mac immediately (TRIM and block reuse can overwrite data).
+2. **Check iCloud Drive Recently Deleted**: If Desktop & Documents sync was on, visit [icloud.com/recovery](https://www.icloud.com/recovery) to restore files.
+3. **Inspect Local APFS Snapshots**: In Terminal run `tmutil listlocalsnapshotdates /`, or use **Disk Utility** $\rightarrow$ Show APFS Snapshots to revert to the nearest daily snapshot.
+4. **Run APFS Recovery Tools**: Use Disk Drill or PhotoRec to scan unallocated disk blocks before new files are written.
+
 ---
 
 ## Requirements
@@ -105,7 +118,7 @@ Automatically detects your Mac and recommends settings:
 
 ### Option A — Drag-and-Drop DMG (Recommended)
 
-1. [**Download MetalNX-2.0.0.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.0.0)
+1. [**Download MetalNX-2.2.1.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.1)
 2. Mount the DMG and drag **MetalNX** into `/Applications`
 3. Launch from Spotlight (`⌘ Space → MetalNX`) or Launchpad
 
@@ -179,11 +192,11 @@ NVN_ANISOTROPY=16              # 16× anisotropic texture filtering
 
 ## Automated Tests
 
-45 automated Swift tests across 9 suites — run locally:
+54 automated Swift tests across 14 suites — run locally:
 
 ```bash
 ./tools/launcher/tests/run_tests.sh
-# TEST SUMMARY: 45/45 passed (0 failed)
+# TEST SUMMARY: 54/54 passed (0 failed)
 ```
 
 | Suite | Coverage |
@@ -197,6 +210,9 @@ NVN_ANISOTROPY=16              # 16× anisotropic texture filtering
 | Package Verifier | VERIFIED_SUPPORTED / UNTESTED_VERSION / UNTESTED_GAME classification |
 | Recipe Preseeding | `env.txt` disk write and read-back verification |
 | Python CLI | `--verify` flag, update Title ID normalization (`0x800` subtraction) |
+| Sandbox & Safety Guardrails | Personal/system path rejection, `MetalNX_Workspace` isolation, safe Trash recycling |
+| Toolchain Doctor | Pre-flight Metal compiler checks, 2x NSP + 10 GB disk space validation |
+| Storage & Toolchain Manager | Itemized breakdown and selective category purge |
 
 ---
 

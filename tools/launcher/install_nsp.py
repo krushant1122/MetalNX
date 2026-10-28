@@ -479,6 +479,107 @@ def verify_file(file_path):
         }
 
 
+PROTECTED_SYSTEM_PATHS = {
+    Path("/"),
+    Path("/Applications"),
+    Path("/System"),
+    Path("/Library"),
+    Path("/Users"),
+    Path("/Volumes"),
+    Path("/bin"), Path("/sbin"), Path("/usr"), Path("/private"), Path("/var"), Path("/etc"),
+    Path.home(),
+    Path.home() / "Desktop",
+    Path.home() / "Documents",
+    Path.home() / "Downloads",
+    Path.home() / "Applications",
+    Path.home() / "Library",
+    Path.home() / "Pictures",
+    Path.home() / "Music",
+    Path.home() / "Movies",
+}
+
+
+def is_protected_directory(p: Path) -> bool:
+    try:
+        resolved = p.resolve()
+        if resolved in PROTECTED_SYSTEM_PATHS:
+            return True
+        if str(resolved).startswith("/Volumes/"):
+            parts = resolved.parts
+            if len(parts) <= 3:  # ('/', 'Volumes', 'DriveName')
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def resolve_safe_scratch(custom_dir) -> Path:
+    if not custom_dir:
+        return Path.home() / "Library/Caches/nxnative"
+    p = Path(custom_dir).resolve()
+    if is_protected_directory(p) or p.name != "MetalNX_Workspace":
+        p = p / "MetalNX_Workspace"
+    return p
+
+
+def is_safe_to_purge(p: Path) -> bool:
+    if is_protected_directory(p):
+        return False
+    resolved = p.resolve()
+    home = Path.home().resolve()
+    allowed_system_prefixes = [
+        home / "Library/Caches/nxnative",
+        home / "Library/Caches/MetalNX",
+        home / "Library/Application Support/MetalNX/engine",
+        home / "Library/Application Support/nxnative/engine",
+        home / ".switch",
+        home / "Library/Caches/uv",
+        home / ".local/share/uv",
+        home / "Library/Logs/MetalNX",
+        home / "Library/Logs/nxnative",
+    ]
+    for prefix in allowed_system_prefixes:
+        try:
+            if resolved == prefix or resolved.is_relative_to(prefix):
+                return True
+        except (ValueError, AttributeError):
+            if str(resolved).startswith(str(prefix)):
+                return True
+    if resolved.name == "MetalNX_Workspace":
+        return True
+    if resolved.name.endswith("_build") or resolved.name.startswith("port_stage_"):
+        return True
+    return False
+
+
+def move_to_trash_safely(p: Path) -> bool:
+    if not is_safe_to_purge(p):
+        raise ValueError(f"Safety Violation: Refusing to purge protected or non-MetalNX path: {p}")
+    # Try macOS Finder Trash first so files are NEVER permanently lost
+    try:
+        esc = str(p.resolve()).replace('"', '\\"')
+        cmd = f'osascript -e \'tell application "Finder" to delete POSIX file "{esc}"\''
+        res = subprocess.run(cmd, shell=True, capture_output=True, timeout=10)
+        if res.returncode == 0:
+            return True
+    except Exception:
+        pass
+    # Fallback to moving into ~/.Trash
+    try:
+        trash = Path.home() / ".Trash"
+        if trash.is_dir() and os.access(trash, os.W_OK):
+            dest = trash / f"{p.name}_{int(time.time())}"
+            shutil.move(str(p), str(dest))
+            return True
+    except Exception:
+        pass
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+    else:
+        p.unlink(missing_ok=True)
+    return True
+
+
 def get_dir_size(p: Path) -> int:
     if not p.exists():
         return 0
@@ -510,8 +611,10 @@ def get_storage_breakdown(custom_scratch=None):
         Path.home() / "Library/Caches/nxnative",
         Path.home() / "Library/Caches/MetalNX",
     ]
-    if custom_scratch and Path(custom_scratch).is_dir():
-        cache_dirs.append(Path(custom_scratch))
+    if custom_scratch:
+        safe_scratch = resolve_safe_scratch(custom_scratch)
+        if safe_scratch.is_dir() and is_safe_to_purge(safe_scratch):
+            cache_dirs.append(safe_scratch)
 
     build_size = sum(get_dir_size(d) for d in cache_dirs)
     items.append({
@@ -588,14 +691,11 @@ def purge_storage(category="all", custom_scratch=None):
             continue
         for p_str in item["paths"]:
             p = Path(p_str)
-            if p.exists():
+            if p.exists() and is_safe_to_purge(p):
                 try:
                     item_size = get_dir_size(p)
                     freed_bytes += item_size
-                    if p.is_dir():
-                        shutil.rmtree(p, ignore_errors=True)
-                    else:
-                        p.unlink(missing_ok=True)
+                    move_to_trash_safely(p)
                     cleaned_paths.append(str(p))
                 except Exception:
                     pass
@@ -643,8 +743,11 @@ def run_doctor(base_path=None, update_path=None, folder_path=None, scratch_path=
     # Required space: (2 * total_nsp_bytes) + 10 GB
     required_bytes = (2 * total_nsp_bytes) + (10 * 1024 * 1024 * 1024)
 
-    target_vol_path = Path(scratch_path).resolve() if scratch_path else (Path.home() / "Library/Caches/nxnative")
-    target_vol_path.mkdir(parents=True, exist_ok=True)
+    target_vol_path = resolve_safe_scratch(scratch_path)
+    try:
+        target_vol_path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
 
     _, _, disk_free = shutil.disk_usage(str(target_vol_path))
     is_sufficient = disk_free >= required_bytes
@@ -715,6 +818,9 @@ def main():
     parser.add_argument("--verify", help="Inspect and verify an NSP/NSZ file for compatibility")
     parser.add_argument("--list-db", action="store_true", help="Print all verified games in JSON")
     args = parser.parse_args()
+
+    if args.work_dir:
+        args.work_dir = str(resolve_safe_scratch(args.work_dir))
 
     # Mode 1: Inspect/Verify File
     if args.verify:

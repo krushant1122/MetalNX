@@ -497,7 +497,7 @@ let crashOutput = String(data: crashPipe.fileHandleForReading.readDataToEndOfFil
 assertTrue(crashOutput.contains("CRASH_REPORT_TEST_PASSED"), "Diagnostic crash report generation and telemetry persistence verified")
 
 // Test 12: Configurable Scratch / Build Directory & Cache Purging
-print("\n--- Test 12: Configurable Scratch / Build Directory & Cache Purging ---")
+print("\n--- Test 12: Sandbox Guardrails, Configurable Scratch Directory & Safe Cache Purging ---")
 let testScratchProc = Process()
 testScratchProc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
 testScratchProc.arguments = ["-c", """
@@ -506,28 +506,50 @@ from pathlib import Path
 sys.path.insert(0, '\(testLauncherDir)')
 import install_nsp
 
+# 1. Verify protected system and personal directories
+desktop = Path.home() / "Desktop"
+assert install_nsp.is_protected_directory(desktop), "Desktop is recognized as protected"
+assert install_nsp.is_protected_directory(Path("/")), "Root / is protected"
+assert install_nsp.is_protected_directory(Path.home()), "Home is protected"
+assert not install_nsp.is_safe_to_purge(desktop), "Desktop cannot be purged"
+
+# 2. Verify sandbox isolation: Desktop maps to Desktop/MetalNX_Workspace
+safe_dir = install_nsp.resolve_safe_scratch(str(desktop))
+assert safe_dir == desktop / "MetalNX_Workspace", f"Safe scratch resolved to {safe_dir}"
+
+# 3. Simulate staging and purge with user personal files present
 with tempfile.TemporaryDirectory(prefix="metalnx_test_scratch_") as tmpdir:
     test_scratch = Path(tmpdir)
-    # Simulate staging dummy RomFS and cache
-    dummy_file = test_scratch / "dummy_build/RomFS.bin"
-    dummy_file.parent.mkdir(parents=True)
+    # Simulate existing user file in the parent directory (e.g. user Desktop)
+    personal_file = test_scratch / "MyImportantPersonalFile.txt"
+    personal_file.write_text("critical user data")
+
+    # Staging workspace inside MetalNX_Workspace subfolder
+    safe_workspace = install_nsp.resolve_safe_scratch(str(test_scratch))
+    safe_workspace.mkdir(parents=True, exist_ok=True)
+    dummy_build = safe_workspace / "dummy_build"
+    dummy_build.mkdir(parents=True, exist_ok=True)
+    dummy_file = dummy_build / "RomFS.bin"
     dummy_file.write_bytes(b"A" * 1024 * 1024)
-    assert dummy_file.is_file(), "Dummy scratch file written"
+    assert dummy_file.is_file(), "Dummy scratch file written inside MetalNX_Workspace"
 
     info = install_nsp.get_storage_breakdown(custom_scratch=str(test_scratch))
     assert info["total_bytes"] >= 1024 * 1024, "Storage breakdown detects scratch files"
 
     res = install_nsp.purge_storage(category="build_cache", custom_scratch=str(test_scratch))
     assert res["status"] == "SUCCESS", "Purge returns success"
-    assert not dummy_file.exists(), "Scratch file purged"
-    print("SCRATCH_PURGE_TEST_PASSED")
+
+    # CRITICAL INVARIANT: Personal file MUST survive untouched!
+    assert personal_file.exists(), "Personal file in user directory preserved and untouched!"
+    assert not dummy_file.exists(), "Scratch file inside MetalNX_Workspace purged"
+    print("SANDBOX_AND_SCRATCH_PURGE_TEST_PASSED")
 """]
 let scratchPipe = Pipe()
 testScratchProc.standardOutput = scratchPipe
 try? testScratchProc.run()
 testScratchProc.waitUntilExit()
 let scratchOutput = String(data: scratchPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-assertTrue(scratchOutput.contains("SCRATCH_PURGE_TEST_PASSED"), "Configurable scratch directory and cache purging verified")
+assertTrue(scratchOutput.contains("SANDBOX_AND_SCRATCH_PURGE_TEST_PASSED"), "Sandbox guardrails, personal file protection, and safe cache purging verified")
 
 // Test 13: Pre-Flight Toolchain Doctor & Required Space Calculation
 print("\n--- Test 13: Pre-Flight Toolchain Doctor & Required Space (2x NSP + 10 GB) ---")

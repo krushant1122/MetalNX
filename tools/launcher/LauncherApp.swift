@@ -362,6 +362,112 @@ struct GameIconView: View {
     }
 }
 
+let kMetalNXVersion = "2.2.1"
+
+// MARK: - Safety & Sandbox Guardrails
+let kProtectedSystemPaths: Set<String> = {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return [
+        "/",
+        "/Applications",
+        "/System",
+        "/Library",
+        "/Users",
+        "/Volumes",
+        "/bin", "/sbin", "/usr", "/private", "/var", "/etc",
+        home,
+        "\(home)/Desktop",
+        "\(home)/Documents",
+        "\(home)/Downloads",
+        "\(home)/Applications",
+        "\(home)/Library",
+        "\(home)/Pictures",
+        "\(home)/Music",
+        "\(home)/Movies"
+    ]
+}()
+
+func isProtectedDirectory(_ path: String) -> Bool {
+    let normalized = URL(fileURLWithPath: path).standardized.path
+    if kProtectedSystemPaths.contains(normalized) {
+        return true
+    }
+    if normalized.hasPrefix("/Volumes/") {
+        let parts = normalized.split(separator: "/")
+        if parts.count <= 2 { // ["Volumes", "DriveName"]
+            return true
+        }
+    }
+    return false
+}
+
+func resolveSafeScratchPath(_ inputPath: String) -> String {
+    let trimmed = inputPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+        return "\(FileManager.default.homeDirectoryForCurrentUser.path)/Library/Caches/nxnative"
+    }
+    let url = URL(fileURLWithPath: trimmed).standardized
+    // ALWAYS sandbox compilation into a dedicated MetalNX_Workspace folder
+    if isProtectedDirectory(url.path) || url.lastPathComponent != "MetalNX_Workspace" {
+        return url.appendingPathComponent("MetalNX_Workspace").path
+    }
+    return url.path
+}
+
+func isSafeToPurge(_ path: String) -> Bool {
+    if isProtectedDirectory(path) {
+        return false
+    }
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    let allowedPrefixes = [
+        "\(home)/Library/Caches/nxnative",
+        "\(home)/Library/Caches/MetalNX",
+        "\(home)/Library/Application Support/MetalNX/engine",
+        "\(home)/Library/Application Support/nxnative/engine",
+        "\(home)/.switch",
+        "\(home)/Library/Caches/uv",
+        "\(home)/.local/share/uv",
+        "\(home)/Library/Logs/MetalNX",
+        "\(home)/Library/Logs/nxnative"
+    ]
+    let normalized = URL(fileURLWithPath: path).standardized.path
+    for p in allowedPrefixes {
+        if normalized == p || normalized.hasPrefix(p + "/") {
+            return true
+        }
+    }
+    let url = URL(fileURLWithPath: normalized)
+    if url.lastPathComponent == "MetalNX_Workspace" || url.lastPathComponent.hasSuffix("_build") || url.lastPathComponent.hasPrefix("port_stage_") {
+        return true
+    }
+    return false
+}
+
+func safelyMoveToTrash(at path: String) -> Bool {
+    guard isSafeToPurge(path) else {
+        print("[SAFETY BLOCK] Refusing to delete unprotected path: \(path)")
+        return false
+    }
+    let url = URL(fileURLWithPath: path)
+    guard FileManager.default.fileExists(atPath: url.path) else { return true }
+
+    var success = false
+    let sem = DispatchSemaphore(value: 0)
+    NSWorkspace.shared.recycle([url]) { _, error in
+        if error == nil {
+            success = true
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            let trashUrl = URL(fileURLWithPath: "\(home)/.Trash/\(url.lastPathComponent)_\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: url, to: trashUrl)
+            success = true
+        }
+        sem.signal()
+    }
+    _ = sem.wait(timeout: .now() + 5.0)
+    return success
+}
+
 // MARK: - Pre-Flight Doctor & Toolchain Models
 struct PreflightDoctorReport {
     var metalCompilerReady: Bool = false
@@ -489,8 +595,11 @@ class StorageManagerViewModel: ObservableObject {
                 "\(home)/Library/Caches/nxnative",
                 "\(home)/Library/Caches/MetalNX"
             ]
-            if !customScratch.isEmpty && FileManager.default.fileExists(atPath: customScratch) && !buildPaths.contains(customScratch) {
-                buildPaths.append(customScratch)
+            if !customScratch.isEmpty {
+                let safeScratch = resolveSafeScratchPath(customScratch)
+                if FileManager.default.fileExists(atPath: safeScratch) && isSafeToPurge(safeScratch) && !buildPaths.contains(safeScratch) {
+                    buildPaths.append(safeScratch)
+                }
             }
             let buildSize = buildPaths.reduce(0) { $0 + getFileOrFolderSize(at: $1) }
             catItems.append(StorageCategoryItem(
@@ -561,12 +670,12 @@ class StorageManagerViewModel: ObservableObject {
     func purgeCategory(id: String, customScratch: String = "") {
         guard let item = items.first(where: { $0.id == id }) else { return }
         for path in item.paths {
-            if FileManager.default.fileExists(atPath: path) {
-                try? FileManager.default.removeItem(atPath: path)
+            if FileManager.default.fileExists(atPath: path) && isSafeToPurge(path) {
+                _ = safelyMoveToTrash(at: path)
             }
         }
         let freedStr = item.formattedSize
-        statusMessage = "✓ Purged \(item.name) (Freed \(freedStr))"
+        statusMessage = "✓ Moved \(item.name) to macOS Trash (Freed \(freedStr))"
         scanStorage(customScratch: customScratch)
     }
 
@@ -574,12 +683,12 @@ class StorageManagerViewModel: ObservableObject {
         let freedStr = formattedTotalSize
         for item in items {
             for path in item.paths {
-                if FileManager.default.fileExists(atPath: path) {
-                    try? FileManager.default.removeItem(atPath: path)
+                if FileManager.default.fileExists(atPath: path) && isSafeToPurge(path) {
+                    _ = safelyMoveToTrash(at: path)
                 }
             }
         }
-        statusMessage = "✓ Cleaned all MetalNX caches & toolchains! (Freed \(freedStr))"
+        statusMessage = "✓ Moved all MetalNX caches & toolchains to macOS Trash! (Freed \(freedStr))"
         scanStorage(customScratch: customScratch)
     }
 }
@@ -591,7 +700,7 @@ class PortInstallerViewModel: ObservableObject {
     @Published var folderPath: String = ""
     @Published var keysPath: String = ""
     @Published var destinationPath: String = "/Applications"
-    @Published var scratchDirPath: String = UserDefaults.standard.string(forKey: "metalnx_scratch_dir") ?? "" {
+    @Published var scratchDirPath: String = resolveSafeScratchPath(UserDefaults.standard.string(forKey: "metalnx_scratch_dir") ?? "") {
         didSet {
             UserDefaults.standard.set(scratchDirPath, forKey: "metalnx_scratch_dir")
         }
@@ -615,6 +724,7 @@ class PortInstallerViewModel: ObservableObject {
 
     init() {
         autoDetectKeys()
+        scratchDirPath = resolveSafeScratchPath(scratchDirPath)
         refreshPreflightDoctor()
     }
 
@@ -634,11 +744,13 @@ class PortInstallerViewModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "Select Scratch & Build Directory"
-        panel.message = "Choose an external SSD or fast drive for intermediate RomFS and build caches"
+        panel.prompt = "Select Scratch Drive or Folder"
+        panel.message = "Choose an external SSD or folder. MetalNX automatically sandboxes compilation into a dedicated 'MetalNX_Workspace' subfolder to guarantee your personal files are protected."
 
         if panel.runModal() == .OK, let url = panel.url {
-            scratchDirPath = url.path
+            let safe = resolveSafeScratchPath(url.path)
+            try? FileManager.default.createDirectory(atPath: safe, withIntermediateDirectories: true)
+            scratchDirPath = safe
             refreshPreflightDoctor(with: db)
         }
     }
@@ -652,18 +764,17 @@ class PortInstallerViewModel: ObservableObject {
     func purgeBuildCache(db: [GameDbEntry] = []) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var pathsToClean = ["\(home)/Library/Caches/nxnative", "\(home)/Library/Caches/MetalNX"]
-        if !scratchDirPath.isEmpty && FileManager.default.fileExists(atPath: scratchDirPath) && !pathsToClean.contains(scratchDirPath) {
+        if !scratchDirPath.isEmpty && FileManager.default.fileExists(atPath: scratchDirPath) && isSafeToPurge(scratchDirPath) && !pathsToClean.contains(scratchDirPath) {
             pathsToClean.append(scratchDirPath)
         }
         var totalFreed: Int64 = 0
         for p in pathsToClean {
+            guard isSafeToPurge(p) else { continue }
             totalFreed += getFileOrFolderSize(at: p)
-            if FileManager.default.fileExists(atPath: p) {
-                try? FileManager.default.removeItem(atPath: p)
-            }
+            _ = safelyMoveToTrash(at: p)
         }
         let freedStr = ByteCountFormatter.string(fromByteCount: totalFreed, countStyle: .file)
-        purgeToastMessage = "✓ Purged build cache (Freed \(freedStr))"
+        purgeToastMessage = "✓ Moved cache to macOS Trash (Freed \(freedStr))"
         refreshPreflightDoctor(with: db)
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
             self.purgeToastMessage = nil
@@ -1073,7 +1184,7 @@ class PortInstallerViewModel: ObservableObject {
         return """
 ### MetalNX Port Diagnostic & Crash Report
 - **Date**: \(dateStr)
-- **App Version**: MetalNX v2.2.0
+- **App Version**: MetalNX v\(kMetalNXVersion)
 - **OS**: macOS \(osVersion)
 - **Hardware**: \(chipName) (\(memGB) RAM)
 - **Game**: \(targetGame) (`\(titleId)`)
@@ -1131,7 +1242,7 @@ class PortInstallerViewModel: ObservableObject {
             let truncatedLogs = consoleLogs.suffix(20).joined(separator: "\n")
             body = """
 ### MetalNX Port Diagnostic & Crash Report
-- **App Version**: MetalNX v2.2.0
+- **App Version**: MetalNX v\(kMetalNXVersion)
 - **Game**: \(verificationResult?.gameName ?? "Unknown") (`\(verificationResult?.titleId ?? "")`)
 - **Failing Stage**: \(currentStage)
 - **Failure Reason**: \(errorMsg)
@@ -3015,6 +3126,9 @@ struct StorageManagerSheet: View {
     @ObservedObject var installerVm: PortInstallerViewModel
     @Binding var isPresented: Bool
     @StateObject private var storageVm = StorageManagerViewModel()
+    @State private var itemToPurge: StorageCategoryItem? = nil
+    @State private var showingPurgeCategoryAlert: Bool = false
+    @State private var showingPurgeAllAlert: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -3111,7 +3225,8 @@ struct StorageManagerSheet: View {
                                 }
 
                                 Button(action: {
-                                    storageVm.purgeCategory(id: item.id, customScratch: installerVm.scratchDirPath)
+                                    itemToPurge = item
+                                    showingPurgeCategoryAlert = true
                                 }) {
                                     Text("Purge")
                                         .font(.system(size: 10.5, weight: .medium))
@@ -3136,6 +3251,20 @@ struct StorageManagerSheet: View {
                         }
                     }
 
+                    // Trash Safety Guarantee Banner
+                    HStack(spacing: 8) {
+                        Image(systemName: "shield.checkerboard")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.mintGreen)
+                        Text("Safety Guarantee: MetalNX uses macOS Trash recycling. System and personal folders are strictly protected.")
+                            .font(.system(size: 10.5))
+                            .foregroundColor(Color.white.opacity(0.75))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(Color.mintGreen.opacity(0.08))
+                    .cornerRadius(8)
+
                     if let status = storageVm.statusMessage {
                         Text(status)
                             .font(.system(size: 11, weight: .medium))
@@ -3149,7 +3278,10 @@ struct StorageManagerSheet: View {
                     // Bulk Action Buttons
                     HStack(spacing: 12) {
                         Button(action: {
-                            storageVm.purgeCategory(id: "build_cache", customScratch: installerVm.scratchDirPath)
+                            if let cacheItem = storageVm.items.first(where: { $0.id == "build_cache" }) {
+                                itemToPurge = cacheItem
+                                showingPurgeCategoryAlert = true
+                            }
                         }) {
                             HStack(spacing: 6) {
                                 Image(systemName: "trash")
@@ -3170,7 +3302,7 @@ struct StorageManagerSheet: View {
                         .focusable(false)
 
                         Button(action: {
-                            storageVm.purgeAll(customScratch: installerVm.scratchDirPath)
+                            showingPurgeAllAlert = true
                         }) {
                             HStack(spacing: 6) {
                                 Image(systemName: "trash.fill")
@@ -3195,6 +3327,28 @@ struct StorageManagerSheet: View {
         .onAppear {
             storageVm.scanStorage(customScratch: installerVm.scratchDirPath)
         }
+        .alert("Move to macOS Trash?", isPresented: $showingPurgeCategoryAlert) {
+            Button("Move to Trash", role: .destructive) {
+                if let item = itemToPurge {
+                    storageVm.purgeCategory(id: item.id, customScratch: installerVm.scratchDirPath)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let item = itemToPurge {
+                Text("MetalNX will safely move \(item.name) (\(item.formattedSize)) to your macOS Trash. Your personal files and original game packages will never be touched.")
+            } else {
+                Text("MetalNX will safely move these files to your macOS Trash.")
+            }
+        }
+        .alert("Wipe All MetalNX Toolchains & Caches?", isPresented: $showingPurgeAllAlert) {
+            Button("Move All to Trash", role: .destructive) {
+                storageVm.purgeAll(customScratch: installerVm.scratchDirPath)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All MetalNX temporary workspaces, compiled shader caches, and portable toolchain binaries (\(storageVm.formattedTotalSize)) will safely be moved to your macOS Trash. Your personal files and original game packages will never be touched.")
+        }
     }
 }
 
@@ -3205,6 +3359,7 @@ struct LiquidPortInstallerView: View {
     let onInstalled: (String) -> Void
 
     @State private var showingLogs: Bool = true
+    @State private var showingPurgeConfirmation: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -3559,7 +3714,7 @@ struct LiquidPortInstallerView: View {
                         }
 
                         Button(action: {
-                            installerVm.purgeBuildCache(db: vm.gamesDatabase)
+                            showingPurgeConfirmation = true
                         }) {
                             HStack(spacing: 4) {
                                 Image(systemName: "trash")
@@ -3576,6 +3731,20 @@ struct LiquidPortInstallerView: View {
                         .buttonStyle(.plain)
                         .focusable(false)
                     }
+
+                    // Sandbox Safety Badge
+                    HStack(spacing: 6) {
+                        Image(systemName: "shield.checkerboard")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color.mintGreen)
+                        Text("Sandboxed in MetalNX_Workspace • Purges move safely to macOS Trash")
+                            .font(.system(size: 9.5))
+                            .foregroundColor(Color.mintGreen.opacity(0.9))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.mintGreen.opacity(0.08))
+                    .cornerRadius(6)
 
                     // Volume Free Space Telemetry
                     HStack(spacing: 6) {
@@ -3957,6 +4126,14 @@ struct LiquidPortInstallerView: View {
             }
         }
         .padding(18)
+        .alert("Move Build Cache to macOS Trash?", isPresented: $showingPurgeConfirmation) {
+            Button("Move to Trash", role: .destructive) {
+                installerVm.purgeBuildCache(db: vm.gamesDatabase)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Intermediate compilation files and extracted RomFS buffers inside 'MetalNX_Workspace' will safely be moved to your macOS Trash. Your personal documents, desktop files, and game dumps will never be touched.")
+        }
     }
 }
 

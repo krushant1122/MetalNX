@@ -92,6 +92,40 @@ Turn raw Switch `.nsp` / `.nsz` dumps into optimized, standalone macOS `.app` ap
 * **Dynamic Real-Time ETA**: Analyzes throughput and remaining work to display realistic, live countdowns (`ETA: ~ 1m 24s remaining`) alongside an elapsed timer.
 * **Automatic Deployment**: Places the compiled `.app` directly into `/Applications/`, updates the shelf, and pre-seeds verified recipes immediately.
 
+---
+
+## 🛡️ Staging Directory Safety & Sandbox Guardrails
+
+### Dedicated Sandbox Isolation (`MetalNX_Workspace`)
+Compiling large Switch titles requires substantial temporary scratch space (typically $2\times$ package size $+ 10\text{ GB}$). MetalNX lets you select external SSDs or custom directories for this scratch buffer. To guarantee your personal files are 100% safe:
+- **Automatic Subfolder Sandboxing**: Whenever a scratch directory or external drive is selected, MetalNX automatically creates and scopes all intermediate files inside a dedicated `MetalNX_Workspace` subfolder.
+- **Strict Path Blacklist**: MetalNX refuses to target system or personal root directories (`/`, `/Users`, `/Applications`, `~/Desktop`, `~/Documents`, `~/Downloads`, `/Volumes/<Drive>`).
+- **macOS Trash Recycling**: When you tap **Purge Cache** or **Wipe All**, MetalNX recycles items to the macOS Trash Bin via `NSWorkspace.shared.recycle` and AppleScript Finder Trash. It **never permanently unlinks files** with raw deletion commands.
+- **Pre-Purge Confirmation Modals**: Every cache clearing or uninstall operation requires explicit user confirmation via dialog.
+
+> [!WARNING]
+> **Staging Directory Best Practice**:
+> Never place personal documents, photo libraries, or unbacked-up project files inside a folder named `MetalNX_Workspace`. MetalNX treats `MetalNX_Workspace` strictly as a temporary scratch arena.
+
+---
+
+### 🚨 Emergency Data Recovery Guide (If Files Were Unlinked)
+If you previously used a raw folder (such as your Desktop) as a build stage with an older version and cleared cache:
+
+1. **Stop Writing to the Mac Immediately**:
+   Cease all downloads, video rendering, or large file operations on that drive immediately. On modern APFS SSDs with TRIM, unallocated blocks can be reclaimed if new data is written.
+2. **Check iCloud Drive Recently Deleted**:
+   If macOS Desktop & Documents syncing was enabled:
+   - Visit [icloud.com](https://www.icloud.com) in your web browser.
+   - Go to **Drive** $\rightarrow$ **Recently Deleted** (or visit `icloud.com/recovery`).
+   - Select your Desktop files and click **Restore**.
+3. **Inspect Local APFS Snapshots & Time Machine**:
+   macOS frequently captures background APFS snapshots before system updates and daily activities:
+   - Open Terminal and run: `tmutil listlocalsnapshotdates /`
+   - If snapshots are available, open **Disk Utility**, select your volume, choose **View $\rightarrow$ Show APFS Snapshots**, or open **Time Machine** from the menu bar to roll back your Desktop state.
+4. **Run APFS Block Recovery**:
+   If snapshots and iCloud are disabled, run a deep-scan file recovery tool (such as **Disk Drill** or **PhotoRec**) directly on the volume while write operations are halted.
+
 ### 3. 🛡️ Guaranteed Settings Application & Verification
 Settings adjusted in MetalNX are guaranteed to take effect:
 * **Authoritative Disk Synchronization**: Immediately writes configuration key-values to `~/Library/Application Support/nxnative/<TitleID>/env.txt`.
