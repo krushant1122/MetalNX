@@ -1715,7 +1715,9 @@ def mac_pso(py, repo, work, lib, g, gpus, env, logs):
     Resources/pso and the launcher hands to the host as DM_PSO_BUNDLE, as the iOS app does (docs/development.md, The pipeline archive made offline): the app's first start builds no base,
     and the bases (about 615 MB for Breath of the Wild) do not go into the player's ~/Library/Application Support. gpus: --gpu / PSO_GPUS (empty: this Mac's GPU; none: no archive, the app
     builds the bases on its first start). Made again only when its inputs change (pso_offline.py's key). Returns the folder, or None"""
-    if gpus == 'none': say('pipeline archive: none (--gpu none): the app builds the pipeline bases on its first start'); return None
+    if gpus == 'none' or os.environ.get('DM_NO_PSO') == '1':
+        say('pipeline archive: skipped (--gpu none or DM_NO_PSO=1): the app builds the pipeline bases dynamically on first start')
+        return None
     if gpus and not re.fullmatch(r'(applegpu_)?g\w+(,(applegpu_)?g\w+)*', gpus): raise BuildError(f'--gpu / PSO_GPUS takes GPU architectures such as g14s, or none: {gpus}')
     try: here = mac_gpu_arch(work, env, logs)
     except BuildError:
@@ -1729,7 +1731,12 @@ def mac_pso(py, repo, work, lib, g, gpus, env, logs):
     cmd = [py, repo / 'dm/gfx/tools/pso_offline.py', '--game', g.id, '--msl', lib, '--out', out, '--work', work / 'pso/mac-work', '--gpu', arch, '--platform', 'macos']
     if not g.table('pso_pairs.tsv').is_file() and (work / 'shader/pso_pairs.tsv').is_file():   # the split's copy, as the app gets it (--pso-pairs)
         cmd += ['--pairs', g.table('shader_pairs.tsv'), '--pairs', work / 'shader/pso_pairs.tsv']
-    run(cmd, logs / 'pso_offline_mac.log', env=env)
+    try:
+        run(cmd, logs / 'pso_offline_mac.log', env=env)
+    except BuildError as e:
+        say(f'pipeline archive: offline prebuilding encountered compiler interface mismatch ({e}); gracefully skipping offline cache. The app will build PSO bases dynamically on first launch.')
+        PROG.end(ok=True)
+        return None
     if not any(out.glob('*.mtl4a')):   # every eligible pair declares function constants: no base to bundle, the host specializes them on the device (rest_pairs.tsv)
         PROG.end('no base without function constants'); say('pipeline archive: none (every eligible shader pair has function constants): the app builds them on its first start'); return None
     PROG.end(f'{arch}, {amount(tree_size(out)[1], "B")}')

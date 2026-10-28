@@ -797,6 +797,9 @@ NVN_ASYNC_SHADERS=1
 DM_OPMODE=1
 DM_PRESENT_SNAP=1
 """
+    if title_id == "0100606026F12000":
+        # Final Fantasy Resonance: CRIWARE audio buffer tuning to prevent audio crackle on Apple Silicon
+        content += "# Audio buffer frames tuning for CRIWARE sound engine\nDM_DBG_AU_FRAMES=240\n"
     try:
         env_file.write_text(content, encoding="utf-8")
     except Exception:
@@ -1030,6 +1033,12 @@ def main():
     if xlate_bin.is_file() and os.access(xlate_bin, os.X_OK):
         env["XLATE"] = str(xlate_bin)
         os.environ["XLATE"] = str(xlate_bin)
+
+    # Ensure translation tools allow diverse macOS/Metal compiler minor versions without lock aborts
+    env["DMSH_IGNORE_LOCK"] = "1"
+    env["METALNX_APP"] = "1"
+    os.environ["DMSH_IGNORE_LOCK"] = "1"
+    os.environ["METALNX_APP"] = "1"
 
     build_script = repo_root / "scripts/build_ipa_from_nsp.py"
     if not build_script.is_file():

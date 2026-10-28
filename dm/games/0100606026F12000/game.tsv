@@ -63,3 +63,7 @@ tex_dyn_slots	on
 # shaders per draw from its pipeline state, so every vertex shader is made to link with any pixel shader (shader_split.py separable_pairs)
 shader_groups	ShaderArchive-Global-=global ShaderArchive-=game
 shader_note	FINAL FANTASY RESONANCE shaders
+
+# ---- Audio ----
+# CRIWARE sound buffer tuning: eliminates crackle on Apple Silicon audio output
+env	DM_DBG_AU_FRAMES	240

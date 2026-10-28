@@ -362,7 +362,7 @@ struct GameIconView: View {
     }
 }
 
-let kMetalNXVersion = "2.2.1"
+let kMetalNXVersion = "2.2.2"
 
 // MARK: - Safety & Sandbox Guardrails
 let kProtectedSystemPaths: Set<String> = {

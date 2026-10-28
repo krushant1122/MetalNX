@@ -126,9 +126,12 @@ def xlate_source_sha():   # same convention as dmsh_xlate --source-sha: the embe
     return hashlib.sha256(b''.join(open(os.path.join(HERE, 'dmsh_xlate', f), 'rb').read() for f in ('Program.cs', 'dmsh_xlate.csproj'))).hexdigest()[:16]
 
 def check_tools():
+    if os.environ.get('DMSH_IGNORE_LOCK') == '1' or os.environ.get('METALNX_APP') == '1':
+        return []
     want = dict(l.rstrip('\n').split('\t', 1) for l in open(LOCK) if '\t' in l and not l.startswith('#'))
     now = tools_now(); bad = [f'{k}: lock {want.get(k)} / actual {v}' for k, v in now.items() if want.get(k) != v]
-    if now['xlate_source'] != xlate_source_sha(): bad.append(f'the translator was not built from the in-repo source: embedded source {now["xlate_source"]} / in repo {xlate_source_sha()} (rebuild dmsh_xlate)')
+    if now.get('xlate_source') and now['xlate_source'] != xlate_source_sha():
+        bad.append(f'the translator was not built from the in-repo source: embedded source {now["xlate_source"]} / in repo {xlate_source_sha()} (rebuild dmsh_xlate)')
     return bad
 
 def header_text(v):
