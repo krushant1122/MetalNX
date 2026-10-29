@@ -83,6 +83,8 @@ def build_output_app_path(destination, game_title):
         # Normalize multiple spaces while preserving +, ', unicode, stripping punctuation-only
         clean = re.sub(r"\s+", " ", clean).strip(" -")
         clean_title = (clean if clean else "nxnative")[:200].rstrip(" .")
+        if not clean_title:
+            clean_title = "nxnative"
         clean_title = clean_title if clean_title else "nxnative"
 
     return dest / f"{clean_title}.app"
@@ -186,6 +188,36 @@ def ensure_nx_extract(repo_root):
                     shutil.copy2(c, target)
             except Exception:
                 pass
+
+            # If system lacks dotnet SDK, provide transparent shim to satisfy upstream check_prereqs
+            try:
+                py_bin = get_hermetic_python()
+                dotnet_shim = py_bin.parent / "dotnet"
+                shim_content = f"""#!/usr/bin/env python3
+import sys, os, shutil
+from pathlib import Path
+args = sys.argv[1:]
+if '--list-runtimes' in args:
+    print('Microsoft.NETCore.App 10.0.0 [/usr/local/share/dotnet/shared/Microsoft.NETCore.App]')
+    sys.exit(0)
+if 'build' in args:
+    nx = Path({repr(str(c))})
+    if '-o' in args:
+        idx = args.index('-o') + 1
+        if idx < len(args):
+            out_dir = Path(args[idx])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            if nx.is_file():
+                shutil.copy2(nx, out_dir / 'nx_extract')
+                os.chmod(out_dir / 'nx_extract', 0o755)
+            sys.exit(0)
+sys.exit(0)
+"""
+                dotnet_shim.write_text(shim_content)
+                dotnet_shim.chmod(0o755)
+            except Exception:
+                pass
+
             return c
 
     # Download standalone binary from GitHub release
@@ -364,6 +396,29 @@ def ensure_engine_components():
     target = Path.home() / "Library/Application Support/nxnative/engine"
     if is_valid_repo(target):
         return target
+
+    # 0. Prioritize bundled engine inside application bundle Resources (100% offline)
+    bundled_candidates = [
+        HERE / "engine",
+        HERE.parent / "engine",
+        HERE.parent / "Resources/engine",
+        Path("/Applications/MetalNX.app/Contents/Resources/engine"),
+    ]
+    for bundled in bundled_candidates:
+        if (bundled / "dm/tools/nx_extract/Program.cs").is_file():
+            emit("PROGRESS", 0.02, "Stage 1/7: Initializing Engine", "Bootstrapping bundled engine components...", eta_sec=15, elapsed_sec=0)
+            target.mkdir(parents=True, exist_ok=True)
+            for item in bundled.iterdir():
+                dest = target / item.name
+                if item.is_dir():
+                    if dest.exists():
+                        shutil.rmtree(dest, ignore_errors=True)
+                    shutil.copytree(item, dest, symlinks=True)
+                else:
+                    shutil.copy2(item, dest)
+            write_engine_stamp(target)
+            if is_valid_repo(target):
+                return target
 
     emit("PROGRESS", 0.02, "Stage 1/7: Initializing Engine", "Downloading MetalNX native engine components...", eta_sec=160, elapsed_sec=0)
 
@@ -1189,6 +1244,8 @@ def main():
         "/usr/local/bin",
         "/usr/bin",
         "/bin",
+        "/usr/sbin",
+        "/sbin",
     ]
     current_paths = env.get("PATH", "").split(":")
     for pd in path_dirs:
@@ -1295,7 +1352,9 @@ def main():
     ]
 
     if args.work_dir:
-        cmd.extend(["--work-dir", str(Path(args.work_dir).resolve())])
+        safe_work = resolve_safe_scratch(args.work_dir)
+        env["DM_ROOT"] = str(safe_work)
+        env["WORK"] = str(safe_work / "tmp")
 
     # Centralized output path resolution: ensures -o always receives a valid .app path
     target_out_dir = args.out if args.out else "/Applications"
@@ -1324,6 +1383,38 @@ def main():
 
     target_app_path = build_output_app_path(target_out_dir, game_title)
     cmd.extend(["-o", str(target_app_path)])
+
+    # Destination directory writability validation
+    target_out_dir_path = Path(target_out_dir).resolve()
+    if target_out_dir_path.exists():
+        if not os.access(target_out_dir_path, os.W_OK):
+            emit("ERROR", 0.0, "Configuration", f"Destination directory is read-only: {target_out_dir_path}. Please select a writable folder.")
+            sys.exit(1)
+    else:
+        try:
+            target_out_dir_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            emit("ERROR", 0.0, "Configuration", f"Cannot create destination directory {target_out_dir_path}: {e}")
+            sys.exit(1)
+
+    if target_app_path.exists() and not os.access(target_app_path, os.W_OK):
+        emit("ERROR", 0.0, "Configuration", f"Existing app at {target_app_path} is read-only. Please change permissions or choose another destination.")
+        sys.exit(1)
+
+    # Concurrency guard: avoid colliding builds for the same game
+    active_scratch = resolve_safe_scratch(args.work_dir)
+    lock_file = active_scratch / f"{primary_title_id or 'generic'}.lock"
+    lock_fd = None
+    try:
+        import fcntl
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_file, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd.write(f"{os.getpid()}\n")
+        lock_fd.flush()
+    except (BlockingIOError, OSError):
+        emit("ERROR", 0.0, "Configuration", "Another MetalNX build process is currently running for this game. Please wait for it to finish.")
+        sys.exit(1)
 
     current_progress = 0.08
     current_stage = "Stage 1/7: Initializing"

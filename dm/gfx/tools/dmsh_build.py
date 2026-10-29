@@ -10,47 +10,17 @@
 # Final summary: success / failure counts and the distribution of reasons; distribution of driver segment read offsets (those outside the range the replay layer can fill are listed separately)
 import ast, inspect, os, re, sys, json, struct, hashlib, shutil, subprocess, tempfile, collections, threading, concurrent.futures as cf
 import dmsh_geometry, dmsh_atomic
-
-TOOL_PATHS = [
-    '/Applications/MetalNX.app/Contents/Resources/bin',
-    '/Applications/MetalNX.app/Contents/Resources',
-    os.path.expanduser('~/.switch'),
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'tools/launcher/bin'),
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'tools/bin'),
-    '/opt/homebrew/bin',
-    '/opt/homebrew/sbin',
-    '/usr/local/bin',
-]
-for _tp in TOOL_PATHS:
-    if os.path.isdir(_tp) and _tp not in os.environ.get('PATH', '').split(':'):
-        os.environ['PATH'] = f"{_tp}:{os.environ.get('PATH', '')}"
-
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HOME = os.path.expanduser('~')
 dm_dir, out = sys.argv[1:3]; want = set(sys.argv[3:]); cache_root = out
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import dmsh_chain, dmsh_fetch, dmsh_facts, dmsh_mtlcache, dmsh_vin, dmsh_pull   # translation chain version: verify the tools against the lock file first; build output goes into b-<V>/
 _bad = dmsh_chain.check_tools()
-if _bad:
-    if os.environ.get('DMSH_IGNORE_LOCK') == '1' or os.environ.get('METALNX_APP') == '1':
-        print('[WARN] translation chain tool mismatch ignored by DMSH_IGNORE_LOCK: ' + ', '.join(_bad))
-    else:
-        sys.exit('\n'.join('[RED] translation chain tools do not match the lock file: ' + b for b in _bad) + '\n(if the tools changed, run dmsh_chain.py --update-lock and commit the lock file; if the translator just was not rebuilt, rebuild it)')
+if _bad: sys.exit('\n'.join('[RED] translation chain tools do not match the lock file: ' + b for b in _bad) + '\n(if the tools changed, run dmsh_chain.py --update-lock and commit the lock file; if the translator just was not rebuilt, rebuild it)')
 CHAIN = dmsh_chain.version(); out = os.path.join(out, 'b-' + CHAIN)
 GAME = dmsh_chain.load_game()   # the current game profile (DM_GAME): the tables come from here
 if f'"{CHAIN}"' not in open(dmsh_chain.HEADER).read(): sys.exit(f'[RED] {dmsh_chain.HEADER} does not hold the current translation chain version {CHAIN}: run dmsh_chain.py --header first and commit it (otherwise the host cannot find these libraries)')
 INPUTS = dmsh_chain.inputs(GAME)   # the digest of the profile's inputs, which a full build stamps on its libraries (b-<V>/inputs.tsv)
-xlate_env = os.environ.get('XLATE')
-if not xlate_env or not (os.path.isfile(xlate_env) and os.access(xlate_env, os.X_OK)):
-    xlate_candidates = [
-        os.path.join(dmsh_chain.XLATE_DIR, 'dmsh_xlate'),
-        '/Applications/MetalNX.app/Contents/Resources/bin/dmsh_xlate',
-        os.path.expanduser('~/.switch/dmsh_xlate'),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'tools/bin/dmsh_xlate'),
-    ]
-    XLATE = next((c for c in xlate_candidates if os.path.isfile(c) and os.access(c, os.X_OK)), os.path.join(dmsh_chain.XLATE_DIR, 'dmsh_xlate'))
-else:
-    XLATE = xlate_env
-SC_BIN = shutil.which('spirv-cross') or 'spirv-cross'
+XLATE = os.environ.get('XLATE', os.path.join(dmsh_chain.XLATE_DIR, 'dmsh_xlate'))
 FACTS = dmsh_facts.load()
 if not os.path.exists(dmsh_facts.TABLE): sys.exit(f'[RED] no answer table {dmsh_facts.TABLE} (it comes with the game profile; an empty table = every query answered with defaults)')
 IOSOUT = os.environ.get('IOSOUT')   # if set, also build the iOS version (iphoneos metallib + reflection) into that directory
@@ -118,7 +88,7 @@ def shader_rule_source(name):
     return b''.join(inspect.getsource(f).encode() for f, applies in RULES if applies(name))
 
 def tool_fingerprint():
-    sc = subprocess.run([SC_BIN, '--version'], capture_output=True, text=True, timeout=30)
+    sc = subprocess.run(['spirv-cross', '--version'], capture_output=True, text=True, timeout=30)
     return ('lock\0' + open(dmsh_chain.LOCK).read() + '\0options\0' + dmsh_chain.options() +
             '\0xlate\0' + dmsh_chain.xlate_source_sha() + '\0spirv-cross\0' + sc.stdout + sc.stderr +
             '\0xc\0' + repr(XC) + '\0mac\0' + MAC_RECORD + '\0ios\0' + (ios_metal.RECORD if IOSOUT else ''))
@@ -393,35 +363,43 @@ def job_for(key, name, rec, w):
 
 TF_SLOT = 8   # Metal vertex buffer index of transform feedback buffer 0 (1-3 follow): slot 0 is the argument buffer, 16-29 the vertex streams, 30 the zero buffer (nvn_mtl.m tf_draw)
 def tf_layout(key, ctl):
-    """Transform feedback layout from a vertex shader's control section (what the NVN driver programs into the GPU's feedback state when the program is bound), measured on Pokémon Legends: Z-A's
-    28 skinning shaders: +0x6dc u16 stride per buffer (4 buffers), +0x6e8 u8 per-buffer enable, +0x6ec u8 buffer count and +0x6ed 1; per buffer b, +0xdc + 0x80 b holds the captured output as
-    0x20 + n (generic output n) and +0x4dc + 0x80 b a u32 component count, captured from x on. Every buffer seen holds one output (stride = 4 x count): position xyz, packed normal / tangent bits.
-    → [[output, components, stride] per buffer, [] for an unused one], None for a shader without transform feedback. Any other form gets a red line and no capture entry point (the host then
-    reports the draw, nvn_mtl.m tf_draw): it is not known how it maps, and one shader must not stop a game's build (Tears of the Kingdom and Ace Attorney have no feedback shader at all)"""
+    """Transform feedback layout from a vertex shader's control section (what the NVN driver programs into the GPU's feedback state when the program is bound): +0x6dc u16 stride per buffer
+    (4 buffers), +0x6e8 u8 per buffer the number of captured outputs, +0x6ec u8 buffer count and +0x6ed 1; per buffer b, +0xdc + 0x80 b lists the captured outputs, one byte each as 0x20 + n
+    (generic output n), and +0x4dc + 0x80 b their component counts, one byte each, each captured from x on and packed in that order (stride = 4 x the components). Pokémon Legends: Z-A's
+    28 skinning shaders capture one output per buffer (position xyz, packed normal / tangent bits); Donkey Kong Country: Tropical Freeze's fur simulation captures two in one buffer
+    (`7dcdaed991c74bfe`: outputs 0 and 1, xyz each, stride 24; count 2, component bytes 03 03).
+    → [[[[output, components], …], stride] per buffer, [] for an unused one], None for a shader without transform feedback. Any other form gets a red line and no capture entry point (the host
+    then reports the draw, nvn_mtl.m tf_draw): it is not known how it maps, and one shader must not stop a game's build (Tears of the Kingdom and Ace Attorney have no feedback shader at all)"""
     strides = struct.unpack_from('<4H', ctl, 0x6dc)
     if not any(strides): return None
     out = []
     for b in range(4):
         if not strides[b]: out.append([]); continue
-        locs = [x for x in ctl[0xdc + 0x80 * b:0x15c + 0x80 * b] if x]; n = struct.unpack_from('<I', ctl, 0x4dc + 0x80 * b)[0]
-        if ctl[0x6e8 + b] != 1 or len(locs) != 1 or not 0x20 <= locs[0] < 0x40 or not 1 <= n <= 4 or strides[b] != 4 * n:
-            print(f'[RED] {key}: transform feedback buffer {b} has a layout of unknown form (stride {strides[b]}, enable {ctl[0x6e8 + b]}, outputs {locs}, components {n}): no capture entry point; see tf_layout', flush=True)
+        k = ctl[0x6e8 + b]; locs = list(ctl[0xdc + 0x80 * b:0xdc + 0x80 * b + k]); comps = list(ctl[0x4dc + 0x80 * b:0x4dc + 0x80 * b + k])
+        if (not 1 <= k <= 4 or any(ctl[0xdc + 0x80 * b + k:0x15c + 0x80 * b]) or any(ctl[0x4dc + 0x80 * b + k:0x4e0 + 0x80 * b])
+                or not all(0x20 <= x < 0x40 for x in locs) or not all(1 <= n <= 4 for n in comps) or strides[b] != 4 * sum(comps)):
+            print(f'[RED] {key}: transform feedback buffer {b} has a layout of unknown form (stride {strides[b]}, outputs {k}: {[hex(x) for x in locs]}, components {comps}): no capture entry point; see tf_layout', flush=True)
             return None
-        out.append([locs[0] - 0x20, n, strides[b]])
+        out.append([[[x - 0x20, n] for x, n in zip(locs, comps)], strides[b]])
     return out
 
 def vs_tf(src, tf):
     """The transform feedback entry point main0_tf: the main function's body, ending in stores of the captured outputs instead of returning them. Metal has no feedback stage; the host runs this
     vertex function with rasterization off and binds buffer b (the game's feedback buffer at its current offset, less first x stride) at TF_SLOT + b, so vertex v writes at v x stride.
-    The values are stored as their bits (packed normals are integers in float outputs)"""
+    The values are stored as their bits (packed normals are integers in float outputs); a buffer's outputs follow one another within the vertex's stride, in tf_layout's order"""
     m = re.search(r'\bvertex\s+main0_out\s+main0\s*\((.*?)\)\s*\{', src, re.S)
     if not m: sys.exit('[RED] vertex shader without a main0 main function, cannot add the transform feedback entry point')
     params, body = m.group(1), src[m.end():]   # the main function is the last function in the file
     vm = re.search(r'uint\s+(\w+)\s*\[\[vertex_id\]\]', params); vid = vm.group(1) if vm else 'dm_vid'
     st = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
     names = {int(l): nm for nm, l in re.findall(r'float4 (\w+) \[\[user\(locn(\d+)\)\]\]', st.group(1) if st else '')}
-    stores = ''.join(f' dm_tf{b}[{vid} * {n} + {i}] = {f"as_type<uint>(out.{names[o]}.{c})" if o in names else "0u"};'
-                     for b, e in enumerate(tf) if e for o, n, _ in [e] for i, c in enumerate('xyzw'[:n]))
+    stores = ''
+    for b, e in enumerate(tf):
+        if not e: continue
+        words, at = e[1] // 4, 0
+        for o, n in e[0]:
+            stores += ''.join(f' dm_tf{b}[{vid} * {words} + {at + i}] = {f"as_type<uint>(out.{names[o]}.{c})" if o in names else "0u"};' for i, c in enumerate('xyzw'[:n]))
+            at += n
     extra = ('' if vm else ', uint dm_vid [[vertex_id]]') + ''.join(f', device uint* dm_tf{b} [[buffer({TF_SLOT + b})]]' for b, e in enumerate(tf) if e)
     return f'\nvertex void main0_tf({params}{extra})\n{{' + body.replace('return out;', '{' + stores + ' return; }')
 
@@ -617,10 +595,20 @@ def int_inputs(src):
         if not bad and nint: out[str(loc_)] = 'uint'
     return out
 
-# vertex / pixel pairs (taken from BNSH variations by shader_split.py): vertex key → paired pixel keys
-PAIRS = collections.defaultdict(set)
-for _ln in open(GAME.table('shader_pairs.tsv')):
-    if _ln.strip() and not _ln.startswith('#'): _v, _p = _ln.split(); PAIRS[_v].add(_p)
+# Both pair tables feed pipelines, so both must feed padding, build order and shader cache keys.
+def load_pairs(game, package):
+    pairs = collections.defaultdict(set)
+    for table in ('shader_pairs.tsv', 'pso_pairs.tsv'):
+        path = str(game.table(table))
+        if table == 'pso_pairs.tsv' and not os.path.isfile(path):
+            path = os.path.join(os.path.dirname(os.path.abspath(package)), table)   # the split's copy for profiles predating this table
+        if table == 'pso_pairs.tsv' and not os.path.isfile(path): continue
+        with open(path) as f:
+            for ln in f:
+                if ln.strip() and not ln.startswith('#'): v, p = ln.split(); pairs[v].add(p)
+    return pairs
+
+PAIRS = load_pairs(GAME, dm_dir)
 
 def vs_pad(key, src):
     """Give a vertex shader the outputs its paired pixel shaders read but it does not write, with the value (0,0,0,1).
@@ -630,7 +618,8 @@ def vs_pad(key, src):
     want = set()
     for ps in PAIRS.get(key, ()):
         fn = os.path.join(out, ps + '_b.metal')
-        if os.path.exists(fn): want |= {int(x) for x in re.findall(r'\[\[user\(locn(\d+)\)', open(fn).read())}
+        if os.path.exists(fn):
+            with open(fn) as f: want |= {int(x) for x in re.findall(r'\[\[user\(locn(\d+)\)', f.read())}
     miss = sorted(want - {int(x) for x in re.findall(r'\[\[user\(locn(\d+)\)', src)})
     i = src.find('struct main0_out\n{\n'); j = src.find('\n};', i); k = src.find('main0_out out = {};')
     if not miss or i < 0 or j < 0 or k < 0: return src, []
@@ -665,7 +654,7 @@ def gs_slice(spv):
     grading LUT the tone mapper reads, and without it the screen came out a flat blue). Metal has no geometry stage, so the host drops such a shader and draws with the vertex shader's
     layer entry points instead (vs_layer_entry), which write that component as the layer. Read from the SPIR-V as GLSL (SPIRV-Cross writes no MSL for a geometry stage).
     → {'loc': input location, 'comp': component} or None (any other geometry shader: one-pass cube shadows emit six transformed triangles)"""
-    r = subprocess.run([SC_BIN, spv, '--version', '450'], capture_output=True, text=True)
+    r = subprocess.run(['spirv-cross', spv, '--version', '450'], capture_output=True, text=True)
     g = r.stdout
     if r.returncode or 'layout(triangles) in;' not in g or 'layout(max_vertices = 3, triangle_strip) out;' not in g or g.count('EmitVertex();') != 3 or 'EndPrimitive' in g: return None
     ins = {m.group(2): int(m.group(1)) for m in re.finditer(r'layout\(location = (\d+)\) in vec4 (\w+)\[3\];', g)}
@@ -820,7 +809,7 @@ def geometry_finish(key, w, j, c1):
         layout = dmsh_geometry.output_layout(code, t)
         k = job['key']; spv = os.path.join(w, k + '.spv')
         dmsh_geometry.flatten_sets(spv)
-        r = subprocess.run([SC_BIN, *XC, spv], capture_output=True, text=True)
+        r = subprocess.run(['spirv-cross', *XC, spv], capture_output=True, text=True)
         if r.returncode: return 'geometry MSL failed', r.stderr.strip()[:160], None
         src = dmsh_geometry.capture_input(dmsh_geometry.topology_pointer(precise(dmsh_atomic.lower_msl(r.stdout))))
         res = json.load(open(os.path.join(w, k + '.res.json')))
@@ -842,7 +831,7 @@ def geometry_finish(key, w, j, c1):
             base = {**refl, 'key': key + '_b'}
             save('_b', src, base)
             spv = os.path.join(w, k + '.reader.spv'); dmsh_geometry.flatten_sets(spv)
-            r = subprocess.run([SC_BIN, *XC, spv], capture_output=True, text=True)
+            r = subprocess.run(['spirv-cross', *XC, spv], capture_output=True, text=True)
             if r.returncode: return 'geometry reader failed', r.stderr.strip()[:160], None
             reader = vs_layer(vs_init(dmsh_geometry.reader(precise(dmsh_atomic.lower_msl(r.stdout)))))
             analysis, full = vs_depth(reader)
@@ -867,7 +856,7 @@ def finish(key, w, j, c1):
         try: return geometry_finish(key, w, j, c1)
         except (ValueError, subprocess.CalledProcessError) as e: return 'geometry failed', str(e)[:160], None
     if j['stage'] == 'vs': spv_single_lane(os.path.join(w, key + '.spv'))   # one-lane subgroups (see spv_single_lane)
-    r = subprocess.run([SC_BIN, *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
+    r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
     if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
     src = open(msl).read()
     if j['stage'] == 'vs':   # second pass: re-translate with inputs that are only used as integers reported as uint (see int_inputs)
@@ -877,7 +866,7 @@ def finish(key, w, j, c1):
             rx = subprocess.run([XLATE, jp, w], capture_output=True, text=True)
             if rx.returncode or not os.path.exists(os.path.join(w, key + '.spv')): return 'translation failed', ('integer-input retranslation: ' + rx.stderr.strip())[:160], None
             spv_single_lane(os.path.join(w, key + '.spv'))
-            r = subprocess.run([SC_BIN, *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
+            r = subprocess.run(['spirv-cross', *XC, os.path.join(w, key + '.spv'), '--output', msl], capture_output=True, text=True)
             if r.returncode: return 'MSL failed', r.stderr.strip()[:160], None
             src = open(msl).read()
     try: src = dmsh_atomic.lower_msl(src)
@@ -915,7 +904,7 @@ def finish(key, w, j, c1):
     dr = drv_reads(src)
     refl = {'key': key + '_b', 'route': 'B', 'chain': CHAIN, 'dm_ctl': key, 'source': f'{name}#{k}', 'pc_paired': pc_of[key], 'stage': j['stage'],
             'entry': entry.group(2) if entry else 'main0', 'msl_entry_kind': entry.group(1) if entry else None, **({'entry_z': 'main0_z', 'entry_geometry_capture': 'main0_gs'} if j['stage'] == 'vs' else {}),
-            **({'entry_tf': 'main0_tf', 'tf_strides': [e[2] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
+            **({'entry_tf': 'main0_tf', 'tf_strides': [e[1] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
             'bindings': reflect(key, j['stage'], src, res),
@@ -1015,8 +1004,10 @@ noreg = [x for x in ok if any(b['kind'] in SLOTK and b.get('reg') is None for b 
 unk = [x for x in ok if any(b['kind'] == '?' for b in x['bindings'])]
 print(f'shaders with a binding whose slot was not decoded {len(noreg)}, with an unrecognized binding kind {len(unk)} (loading them at run time prints [RED] lines)')
 for e, n in collections.Counter(f"{b['kind']} {b['msl_name'][:28]}" for x in noreg + unk for b in x['bindings'] if b['kind'] == '?' or (b['kind'] in SLOTK and b.get('reg') is None)).most_common(8): print(f'  {n:5d}  {e}')
-nt = collections.Counter(nn.split(' (')[0] for x in ok for nn in x['notes'])
+nt = collections.Counter(nn.split(' (')[0] for x in ok for nn in x['notes'] if not nn.startswith('translator: '))
 for e, n in nt.most_common(8): print(f'  queries without an answer {n:5d}  {e}')
+tm = collections.Counter(nn[len('translator: '):] for x in ok for nn in x['notes'] if nn.startswith('translator: '))   # the translator's own messages (dmsh_xlate Log): bindless reads resolved or removed, invalid encodings
+for e, n in tm.most_common(12): print(f'  translator {n:6d} in {sum(e in [nn[len("translator: "):] for nn in x["notes"]] for x in ok):5d} shaders  {e}')
 json.dump([{'key': r[0], 'st': r[1], 'err': r[2]} for r in res], open(os.path.join(out, '_b_build.json'), 'w'), ensure_ascii=False)
 if not want:   # a full build: the stamp, then the c1 guard and uniform read extent tables from these Mac outputs, into the profile folder (the host takes them only beside this stamp)
     for _d in [out] + ([IOSOUT] if IOSOUT else []): dmsh_chain.write_stamp(_d, GAME.id, INPUTS)

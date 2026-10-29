@@ -1,0 +1,74 @@
+name: Bug Report / Port Failure
+description: File a diagnostic report for an install or port failure in MetalNX
+title: "[Port Failure]: <Game Title>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue with MetalNX!
+        Please fill in the required fields below. If the port failed inside MetalNX, click the **"Copy Diagnostic Crash Report"** button in the app and paste it below.
+
+  - type: input
+    id: app_version
+    attributes:
+      label: MetalNX App Version
+      description: The exact version of MetalNX you are running (e.g., 2.2.3).
+      placeholder: "2.2.3"
+    validations:
+      required: true
+
+  - type: input
+    id: engine_commit
+    attributes:
+      label: Engine Commit SHA
+      description: The pinned nxnative engine commit (e.g. ff44c59e124fb1fb34974cc1679a5af7fc29b2fa, or as shown in Settings -> About).
+      placeholder: "ff44c59e124fb1fb34974cc1679a5af7fc29b2fa"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: failing_stage
+    attributes:
+      label: Failing Stage
+      description: The exact stage where the compilation or packaging stopped.
+      options:
+        - "Stage 1/7: Initializing & Title Survey"
+        - "Stage 2/7: Extracting Game RomFS & Assets"
+        - "Stage 3/7: Rewriting ARM64 Modules & Applying Patches"
+        - "Stage 4/7: Translating Maxwell Shaders to Metal"
+        - "Stage 5/7: Compiling Native macOS Host Shell"
+        - "Stage 6/7: Prebuilding Metal Pipeline Bases"
+        - "Stage 7/7: Packaging macOS Application Bundle"
+        - "Pre-flight Toolchain Doctor"
+        - "Game Scanner / Library"
+        - "Runtime (App Launch / Crash)"
+    validations:
+      required: true
+
+  - type: input
+    id: game_info
+    attributes:
+      label: Game Title & Title ID
+      description: The game title and 16-character Title ID (e.g. Mario Kart 8 Deluxe `0100152000022000`).
+      placeholder: "Mario Kart 8 Deluxe (0100152000022000)"
+    validations:
+      required: true
+
+  - type: input
+    id: system_info
+    attributes:
+      label: macOS Version & Mac Model
+      description: macOS version and Apple Silicon chip (e.g. macOS 15.1, M3 Pro 18GB).
+      placeholder: "macOS 15.1, M3 Pro, 18 GB RAM"
+    validations:
+      required: true
+
+  - type: textarea
+    id: crash_report
+    attributes:
+      label: MetalNX Diagnostic & Crash Report
+      description: Paste the diagnostic report from the clipboard button or ~/Library/Logs/MetalNX/crash_latest.log.
+      render: shell
+    validations:
+      required: true

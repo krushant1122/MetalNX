@@ -76,6 +76,8 @@ t_vin
 t_vin.dSYM/
 t_tbuf2d
 t_tbuf2d.dSYM/
+t_tbuf_align
+t_tbuf_align.dSYM/
 t_view_levels
 t_view_levels.dSYM/
 t_upload_budget

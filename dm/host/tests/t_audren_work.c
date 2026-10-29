@@ -25,6 +25,8 @@ static void work_free(void *p) {
 
 enum { SDK_WORK = 0x760000, SERVICE_WORK = 0x61d000 };
 static int opens, starts, joins, closes, fail_open, nested;
+static int event_destroys, event_binds;
+static void *sdk_event;
 static void *sdk_work;
 static void *map_key, *map_value;
 static size_t sdk_size(const uint8_t *param) {
@@ -46,8 +48,10 @@ static Result sdk_open(void **handle, const uint8_t *param, void *work, size_t s
 }
 static Result sdk_open_ev(void **handle, void *ev, const uint8_t *param, void *work, size_t size) {
     assert(ev);
+    sdk_event = ev;
     return nested ? h_ar_Open0(handle, param, work, size) : sdk_open(handle, param, work, size);
 }
+static void sdk_destroy_event(void *ev) { assert(ev == sdk_event); event_destroys++; }
 static void sdk_close(void *obj, void *state) {
     assert(obj == sdk_work && state == (uint8_t *)sdk_work + 0x80);
     assert(((uint8_t *)obj)[SDK_WORK - 1] == 0x5a);   // storage is alive through SDK teardown
@@ -58,6 +62,7 @@ void *guest_sym(const char *name) {
     if (!strcmp(name, hle_force_h_ar_Open.name)) return sdk_open_ev;
     if (!strcmp(name, hle_force_h_ar_Open0.name)) return sdk_open;
     if (!strcmp(name, hle_force_h_ar_Close.name)) return sdk_close;
+    if (!strcmp(name, "_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE")) return sdk_destroy_event;
     return NULL;
 }
 void *objmap_get(const void *key) { return key == map_key ? map_value : NULL; }
@@ -81,7 +86,10 @@ void dm_pcmout_start(void *k) { (void)k; }
 int dm_pcmout_append(void *k, void *b) { (void)k; (void)b; return 0; }
 void *dm_pcmout_released(void *k) { (void)k; return NULL; }
 void dm_pcmout_wait(void *k, int ms) { (void)k; (void)ms; }
-void hle_bind_system_event(void *ev, int ac) { (void)ev; (void)ac; }
+void hle_bind_system_event(void *ev, int ac) {
+    assert(ev == sdk_event && ac == 1 && event_destroys == event_binds + 1);
+    event_binds++;
+}
 
 int main(void) {
     uint8_t param[P_SIZE] = {0}, saved[P_SIZE];
@@ -131,6 +139,7 @@ int main(void) {
         h_ar_Close(handle[0], handle[1]);
         assert(!backing && !map_key && allocations == frees && closes == c + 1 && joins == starts);
     }
+    assert(event_destroys == 2 && event_binds == 2);   // event opens, including the nested route, replace the local event once
     fail_open = 1;
     int s = starts;
     assert(h_ar_Open0(handle, param, work, SERVICE_WORK));

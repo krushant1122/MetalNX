@@ -51,8 +51,9 @@ static void desc_caps(void) {
     CHECK(d && d.arrayLength == 1 && [g_dev newTextureWithDescriptor:d], "array of no layers: one");
     CHECK(desc_of(NVN_TEXTURE_TARGET_1D_ARRAY, 8, 4096, 1, 1, 1) == nil, "1D array of 4096 layers: not made");
     d = desc_of(NVN_TEXTURE_TARGET_2D_MULTISAMPLE, 16, 16, 1, 1, 8);
-    NSUInteger s8 = 8; while (s8 > 1 && ![g_dev supportsTextureSampleCount:s8]) s8--;
-    CHECK(d && d.sampleCount == s8 && d.mipmapLevelCount == 1 && [g_dev newTextureWithDescriptor:d], "8 samples: the most this GPU has");
+    CHECK([g_dev supportsTextureSampleCount:8] ? d && d.sampleCount == 8 && [g_dev newTextureWithDescriptor:d] : d == nil, "8 samples: made where the GPU has them, else not made");
+    d = desc_of(NVN_TEXTURE_TARGET_2D_MULTISAMPLE, 16, 16, 1, 1, 4);
+    CHECK(d && d.sampleCount == 4 && d.mipmapLevelCount == 1 && [g_dev newTextureWithDescriptor:d], "4 samples: made");
     CHECK(desc_of(NVN_TEXTURE_TARGET_2D_MULTISAMPLE, 16, 16, 1, 1, 1) == nil, "multisample of one sample: not made");
 }
 int main(void) { @autoreleasepool {

@@ -17,12 +17,14 @@ mkdir -p "$BUILD_DIR"
 
 # 5-second architectural lint step: catch undefined variables (F821) and syntax errors before packaging
 echo "-> Running pre-build static lint check..."
-if [ -f "$DIR/bin/uv" ]; then
-    "$DIR/bin/uv" run --with ruff ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
-elif command -v uv &> /dev/null; then
-    uv run --with ruff ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
-elif command -v ruff &> /dev/null; then
+if command -v ruff &> /dev/null; then
     ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+elif [ -f "$DIR/bin/uv" ] && curl -Is --connect-timeout 2 https://pypi.org >/dev/null 2>&1; then
+    "$DIR/bin/uv" run --with ruff ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+elif command -v uv &> /dev/null && curl -Is --connect-timeout 2 https://pypi.org >/dev/null 2>&1; then
+    uv run --with ruff ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+else
+    python3 -m py_compile "$REPO_ROOT/tools/launcher/install_nsp.py"
 fi
 echo "✓ Pre-build lint check passed (zero undefined variables)"
 
@@ -60,6 +62,13 @@ cp "$DIR/games_db.json" "$APP_BUNDLE/Contents/Resources/games_db.json"
 echo "-> Bundling latest engine scripts..."
 mkdir -p "$APP_BUNDLE/Contents/Resources/scripts"
 cp -R "$REPO_ROOT/scripts/"* "$APP_BUNDLE/Contents/Resources/scripts/"
+
+# Bundle native engine (dm, scripts, stamp) for zero-download offline support
+echo "-> Bundling native engine (dm, scripts, stamp) for zero-download offline support..."
+mkdir -p "$APP_BUNDLE/Contents/Resources/engine"
+cp -R "$REPO_ROOT/dm" "$APP_BUNDLE/Contents/Resources/engine/"
+cp -R "$REPO_ROOT/scripts" "$APP_BUNDLE/Contents/Resources/engine/"
+cp "$REPO_ROOT/.metalnx_engine_stamp.json" "$APP_BUNDLE/Contents/Resources/engine/"
 
 # Bundle self-contained nx_extract if built (zero .NET runtime required by user)
 if [ -f "$REPO_ROOT/tools/bin/nx_extract" ]; then

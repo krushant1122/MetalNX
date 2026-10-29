@@ -8,8 +8,8 @@
 # Signing: the inner host first, then the bundle (codesign --force --sign <identity>; '-' = ad-hoc), without the hardened runtime: the host maps the game's code executable, which the hardened
 # runtime refuses without entitlements, and so the app cannot be notarized.
 # Usage: pack_app.py <out.app> --host <dmhost> --patched <dir> --romfs <dir> --msl <dir> --tables <profile dir> --font <dir> --title-id <id> --name <name> [options]
-#   Writes <out.app>.partial and swaps it in at the end (the old app stays as it was on failure); prints one line per step ("step: ...")
-import argparse, ctypes, os, plistlib, re, shutil, subprocess, sys, tempfile
+#   Reuses <out.app> while <out.app>.key matches; otherwise writes <out.app>.partial and swaps it in at the end. Prints "step: ..." and "app: <path>[, reused (inputs unchanged)]".
+import argparse, ctypes, hashlib, json, os, plistlib, re, shutil, stat, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -75,12 +75,12 @@ def min_os(host):   # the host's deployment target (LC_BUILD_VERSION minos): the
     return m.group(1) if m else '14.0'
 
 
-def build_launcher(out, minos):
-    run(['xcrun', 'clang', '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', '-o', out, HERE / 'launcher.c', '-framework', 'CoreFoundation'])
+def build_launcher(out, minos, clang, sdk):
+    run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', '-o', out, HERE / 'launcher.c', '-framework', 'CoreFoundation'])
 
 
 def make_icns(jpg, out):   # the game's icon (256x256 JPEG) at every size an .icns holds
-    with tempfile.TemporaryDirectory() as t:
+    with tempfile.TemporaryDirectory(dir=out.parent) as t:
         s = Path(t) / 'AppIcon.iconset'; s.mkdir()
         for n in ICON_SIZES:
             for k, suffix in ((1, ''), (2, '@2x')):
@@ -97,65 +97,149 @@ def info_plist(a, minos, icon):
     return p
 
 
-def sign(app, identity):   # the inner host first, then the bundle (its resources and the launcher); no --options runtime (see the top)
+def sign(app, identity, codesign):   # the inner host first, then the bundle (its resources and the launcher); no --options runtime (see the top)
     host = app / 'Contents/MacOS/dmhost'
     for target in (host, app):
-        try: run(['codesign', '--force', '--sign', identity, target])
+        try: run([codesign, '--force', '--sign', identity, target])
         except SystemExit as e:
             if 'detritus' not in str(e): raise
-            run(['xattr', '-cr', app]); run(['codesign', '--force', '--sign', identity, target])   # Finder information or resource forks on copied files: codesign refuses them
+            run(['xattr', '-cr', app]); run([codesign, '--force', '--sign', identity, target])   # Finder information or resource forks on copied files: codesign refuses them
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with Path(path).open('rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''): h.update(b)
+    return h.hexdigest()
+
+
+def inventory(root):
+    """Stat trees avoid reading multi-GB game data, and detect changes to executable modes in the app."""
+    def walk_error(e): raise e
+    paths = [root]
+    for parent, dirs, files in os.walk(root, onerror=walk_error):
+        paths.extend(Path(parent) / n for n in dirs + files)
+    rows = []
+    for p in sorted(paths):
+        s = p.lstat()
+        rows.append([str(p.relative_to(root)), s.st_mode, s.st_size, s.st_mtime_ns, s.st_ctime_ns,
+                     os.readlink(p) if stat.S_ISLNK(s.st_mode) else ''])
+    return rows
+
+
+def selected_inputs(a):
+    """Resolve once: these same lists supply both the reuse key and the copies."""
+    for name in ('patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso'):
+        p = getattr(a, name)
+        if p and not Path(p).is_dir(): raise SystemExit(f'no {name} directory at {p}')
+    if a.marker and not (Path(a.romfs) / a.marker).exists(): raise SystemExit(f'no RomFS at {a.romfs} (missing {a.marker})')
+    mods = sorted({p for pat in MODULE_FILES for p in Path(a.patched).glob(pat)})
+    if not any(p.name.endswith('.patched.bin') for p in mods): raise SystemExit(f'no rewritten module in {a.patched}')
+    for p in mods:
+        if p.name.endswith('.patched.bin') and not p.with_name(p.name.removesuffix('.patched.bin') + '.fixups.tsv').is_file():
+            raise SystemExit(f'no rewriter fixups for {p}')
+    msls = sorted(p for pat in MSL_FILES for p in Path(a.msl).glob(pat) if p.is_file() and p.name != '_b_build.json')
+    if not any(p.suffix == '.metallib' for p in msls): raise SystemExit(f'no shader libraries at {a.msl}')
+    pso = sorted({p for pat in PSO_FILES for p in Path(a.pso).glob(pat)}) if a.pso else []
+    if a.pso and (not any(p.suffix == '.mtl4a' for p in pso) or not (Path(a.pso) / 'prebuilt.tsv').is_file()):
+        raise SystemExit(f'no pipeline archive with its prebuilt.tsv in {a.pso}')
+    tables = [Path(a.tables) / n for n in TABLES if (Path(a.tables) / n).is_file()]
+    pairs = Path(a.pso_pairs) if a.pso_pairs and not any(p.name == 'pso_pairs.tsv' for p in tables) else None
+    fonts = sorted(Path(a.font).glob('*.ttf'))
+    files = [Path(a.host)] + mods + msls + pso + tables + fonts + ([pairs] if pairs else [])
+    files += [Path(p) for p in (a.env_file, a.icon) if p]
+    for p in files:
+        if not p.is_file(): raise SystemExit(f'no input file at {p}')
+    return mods, msls, pso, tables, pairs, fonts, files
+
+
+def replace_app(tmp, out):
+    if out.exists():
+        # RENAME_SWAP exchanges complete directories atomically; a failed swap leaves the old app at out.
+        swap = ctypes.CDLL(None, use_errno=True).renamex_np
+        swap.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        swap.restype = ctypes.c_int
+        if swap(os.fsencode(tmp), os.fsencode(out), 2):
+            err = ctypes.get_errno(); raise OSError(err, os.strerror(err), str(out))
+    else:
+        tmp.rename(out)
 
 
 def pack(a):
     out = Path(a.out).resolve()
     if out.suffix != '.app': raise SystemExit(f'the output must end in .app: {out}')
+    key_file = out.with_name(out.name + '.key')
+    try:
+        previous = json.loads(key_file.read_text())
+    except (OSError, ValueError): previous = None
+    try:
+        a = argparse.Namespace(**vars(a))
+        for name in ('out', 'host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'pso_pairs', 'env_file', 'icon'):
+            if getattr(a, name): setattr(a, name, str(Path(getattr(a, name)).resolve()))
+        mods, msls, pso, tables, pairs, fonts, files = selected_inputs(a)
+        clang = Path(run(['xcrun', '--find', 'clang']).strip()).resolve()
+        sdk = Path(run(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()).resolve()
+        if not clang.is_file() or not sdk.is_dir(): raise SystemExit(f'no compiler or SDK at {clang}, {sdk}')
+        codesign = shutil.which('codesign')
+        if not codesign: raise SystemExit('codesign is not available')
+        codesign = Path(codesign).resolve()
+        minos = min_os(a.host)
+        clang_stat = clang.stat()
+        inputs = {'options': vars(a), 'files': [(str(p), p.stat().st_mode, digest(p), os.readlink(p) if p.is_symlink() else None) for p in files + [Path(__file__).resolve(), HERE / 'launcher.c']],
+                  'trees': [(p, inventory(Path(p))) for p in (a.romfs, a.aoc) if p],
+                  'tools': [str(clang), clang_stat.st_mode, clang_stat.st_size, clang_stat.st_mtime_ns, clang_stat.st_ctime_ns, run([clang, '--version']).strip(),
+                            str(sdk), run(['xcrun', '--sdk', 'macosx', '--show-sdk-version']).strip(),
+                            str(codesign), codesign.stat().st_mode, digest(codesign), minos]}
+        key = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+        if out.is_dir() and isinstance(previous, dict) and previous.get('inputs') == key and previous.get('app') == inventory(out):
+            print(f'app: {out}, reused (inputs unchanged)', flush=True)
+            return
+    except BaseException:
+        key_file.unlink(missing_ok=True)
+        raise
+    key_file.unlink(missing_ok=True)   # no failed attempt may leave a valid reuse key
     tmp = out.with_name(out.name + '.partial')
     shutil.rmtree(tmp, ignore_errors=True)
     c = tmp / 'Contents'; mac, res = c / 'MacOS', c / 'Resources'; dm = res / 'dm'
     for d in (mac, dm / 'font'): d.mkdir(parents=True)
     romfs, msl, aoc = Path(a.romfs), Path(a.msl), Path(a.aoc) if a.aoc else None
-    if a.marker and not (romfs / a.marker).exists(): raise SystemExit(f'no RomFS at {romfs} (missing {a.marker})')
-    msls = sorted(p for pat in MSL_FILES for p in msl.glob(pat) if p.is_file() and p.name != '_b_build.json') if msl.is_dir() else []
-    if not any(p.suffix == '.metallib' for p in msls): raise SystemExit(f'no shader libraries at {msl}')
-    pso = sorted({p for pat in PSO_FILES for p in Path(a.pso).glob(pat)}) if a.pso else []
-    if a.pso and (not any(p.suffix == '.mtl4a' for p in pso) or not (Path(a.pso) / 'prebuilt.tsv').is_file()): raise SystemExit(f'no pipeline archive with its prebuilt.tsv in {a.pso}')
     clone = can_clone(romfs, res); pso_clone = bool(pso) and can_clone(Path(a.pso), res)
     if not clone or (pso and not pso_clone):
         need = (0 if clone else sum(tree_bytes(d) for d in [romfs] + ([aoc] if aoc else [])) + sum(p.stat().st_size for p in msls)) + (0 if pso_clone else sum(p.stat().st_size for p in pso))
         free = shutil.disk_usage(res).free
         if need + (1 << 30) > free: raise SystemExit(f'the app needs {need / 2**30:.1f} GB on the volume of {out.parent} (no APFS clones from the build there) and {free / 2**30:.1f} GB are free')
     step(f'launcher and host ({"clones" if clone else "copies"} of the game files)')
-    minos = min_os(a.host)
-    build_launcher(mac / EXE, minos)
+    build_launcher(mac / EXE, minos, clang, sdk)
     shutil.copy2(a.host, mac / 'dmhost')
-    mods = sorted({p for pat in MODULE_FILES for p in Path(a.patched).glob(pat)})
-    if not any(p.name.endswith('.patched.bin') for p in mods): raise SystemExit(f'no rewritten module in {a.patched}')
-    for p in mods:
-        if p.name.endswith('.patched.bin') and not p.with_name(p.name.removesuffix('.patched.bin') + '.fixups.tsv').is_file():
-            raise SystemExit(f'no rewriter fixups for {p}')
     copy(mods, dm, clone)
-    tables = [Path(a.tables) / n for n in TABLES if (Path(a.tables) / n).is_file()]
     if tables: copy(tables, dm, False)
-    if a.pso_pairs and not (dm / 'pso_pairs.tsv').is_file(): shutil.copyfile(a.pso_pairs, dm / 'pso_pairs.tsv')   # the split's copy, for a profile without the table
-    fonts = sorted(Path(a.font).glob('*.ttf'))
+    if pairs: shutil.copyfile(pairs, dm / 'pso_pairs.tsv')   # the split's copy, for a profile without the table
     if fonts: copy(fonts, dm / 'font', False)
     if a.env_file: shutil.copyfile(a.env_file, dm / 'env.txt')
     step('shader libraries'); msl_dst = res / 'msl' / (a.msl_name or msl.name); msl_dst.mkdir(parents=True); copy(msls, msl_dst, clone)
     if aoc: step('add-on content'); copy([aoc], res / 'aoc', clone)
     if pso: step('pipeline archive'); (res / 'pso').mkdir(); copy(pso, res / 'pso', pso_clone)
     step('game files'); copy([romfs], res / 'romfs', clone)
-    icon = bool(a.icon and Path(a.icon).is_file())
+    icon = bool(a.icon)
     if icon: step('icon'); make_icns(a.icon, res / 'AppIcon.icns')
     info = info_plist(a, minos, icon)
     info['DMModuleFiles'] = [p.name for p in mods]
     (c / 'Info.plist').write_bytes(plistlib.dumps(info))
     (c / 'PkgInfo').write_text('APPL????')
-    step(f'signing ({"ad-hoc" if a.sign == "-" else a.sign})'); sign(tmp, a.sign)
-    old = out.with_name(out.name + '.old')
-    shutil.rmtree(old, ignore_errors=True)
-    if out.exists(): out.rename(old)
-    tmp.rename(out)
-    shutil.rmtree(old, ignore_errors=True)
+    step(f'signing ({"ad-hoc" if a.sign == "-" else a.sign})'); sign(tmp, a.sign, codesign)
+    had_old = out.exists()
+    replace_app(tmp, out)
+    key_tmp = key_file.with_name(key_file.name + '.partial')
+    try:
+        key_tmp.write_text(json.dumps({'inputs': key, 'app': inventory(out)}, sort_keys=True) + '\n')
+        key_tmp.replace(key_file)
+    except BaseException:
+        if had_old: replace_app(tmp, out)
+        else: out.rename(tmp)
+        raise
+    finally:
+        key_tmp.unlink(missing_ok=True)
+    shutil.rmtree(tmp, ignore_errors=True)   # the old app after a successful swap
     print(f'app: {out}', flush=True)
 
 

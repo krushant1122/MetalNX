@@ -59,6 +59,7 @@ Game-specific findings. The general host changes they led to are listed under [F
 
 ## Files and shaders
 
+- **Resolved in the shader builder (#283): BAHS pipeline interfaces.** The local 1.4.3 libraries reproduce all 11 reported pairs: four vertex shaders omit `locn1` or `locn6`, which their pixel partners read. Every failing pair is in the split's 4,159 BAHS pairs; none of the profile's 20,016 other pairs has a missing output. The shared fix makes padding read both tables; see [Pixel shader inputs the vertex shader does not write](../../../docs/reference/shaders.md#pixel-shader-inputs-the-vertex-shader-does-not-write). Targeted validation: the affected vertex sources compile for Mac and iOS, and every affected pair builds into `g13s` and `g16s` Metal archives with both depth entry points. This uses Metal 32023.921; the original TotK sources reproduce the reported rejection on that toolchain too. Full Mac rebuild: 28,669 of 28,669 shaders successful, no binding or pulling-library failures, no regressions, and no interface mismatches across all 24,175 pairs. The Mac host also rebuilt with the regenerated uniform tables. The complete `g16s` archive also succeeds: all 24,153 eligible bases, 1,306 MiB, Metal 32023.921 (2,494 s in the compiler with other builds running). The compiler peaked around 36 GB; a late sample was releasing `AIRNTDispose` / `LLVMContext` contexts. No new gameplay or iPhone run.
 - **Current: prewarm capture reported in [PR #261](https://github.com/seedds/nxnative/pull/261).** The seed in `pso_manifest.tsv` contains 1,537 shader, 2,512 render-pipeline and 43 compute-pipeline rows, recorded on an M2 iPad Pro with update 1.4.3 on 2026-10-25 over about 33 minutes: boot, title, a save load and overworld exploration. The author reports no pipeline compilations in the second session's long frames with this list. This covers the recorded route, not the whole game; no new gameplay or cold-install validation here. The capture is separate from the shared deswizzle and symbol-index optimizations.
 - Most RomFS files are zstd with dictionaries (`*.zs`); the dictionaries are `Pack/ZsDic.pack.zs`, which is also the profile's `romfs_marker`.
 - Shaders: `Shader/*.bfsha.zs` (BNSH; `material.bfsha` holds most) and the layout shaders in `Shader/ApplicationPackage.Nin_NX_NVN.release.sarc.zs`.
@@ -73,6 +74,8 @@ Game-specific findings. The general host changes they led to are listed under [F
 ## Found on this game
 
 General host changes first needed here; each applies to every game:
+
+- **BAHS pairs omitted from vertex padding:** [Pixel shader inputs the vertex shader does not write](../../../docs/reference/shaders.md#pixel-shader-inputs-the-vertex-shader-does-not-write).
 
 - **Resolved in the host: frame-step recovery after a 30 fps movie cap**: [The frame step after a 30 fps cap ends](../../../docs/reference/frame-rate.md#the-frame-step-after-a-30-fps-cap-ends). Modelled with the movie flag; no new gameplay recovery observation is claimed.
 

@@ -151,6 +151,11 @@ PPtr<Shader>: int m_FileID; SInt64 m_PathID
 PPtr<Texture>: int m_FileID; SInt64 m_PathID
 Shader: string m_Name; SerializedShader m_ParsedForm; vector<data:unsigned int> platforms; vector<data:vector<data:unsigned int>> offsets; vector<data:vector<data:unsigned int>> compressedLengths; vector<data:vector<data:unsigned int>> decompressedLengths; vector<data:UInt8> compressedBlob; vector<data:unsigned int> stageCounts; vector<data:PPtr<Shader>> m_Dependencies; map<data:pair(string,PPtr<Texture>)>~ m_NonModifiableTextures; bool! m_ShaderIsBaked
 '''
+# Unity 6000.0.28f1 (Donkey Kong Country Returns HD) strips every tree and ships no bundles. Its Shader hash is the one BALL x PIT's 6000.0.62f1 bundles carry:
+# the 2022.3 layout without the pass's editor hashes / platforms, with a final asset GUID. Checked against that bundle's nodes, order and alignment flags,
+# and all 214 stripped Shader objects read to their exact ends. Keep the older layout intact: its pass headers still contain those two arrays.
+SHADER_6000_0 = SHADER_2022_3.replace('vector<data:Hash128> m_EditorDataHash; vector<data:UInt8> m_Platforms; ', '').replace(
+    'bool! m_ShaderIsBaked\n', 'bool! m_ShaderIsBaked; GUID m_AssetGUID\n') + 'GUID: unsigned int data[0]; unsigned int data[1]; unsigned int data[2]; unsigned int data[3]\n'
 # The Unity 2020.3 Shader (Patrick's Parabox, Unity 2020.3.30f1: only Data/*.assets, its shaders the built-in ones in Data/Resources) matches the type tree in Fire Emblem Engage's bundles
 # (Unity 2020.3.18f1), whose hash is the same: global and local keyword indices per subprogram, every subprogram in m_SubPrograms, no parameter blobs, keyword names or stage counts
 SHADER_2020_3 = _SHADER_COMMON + '''SerializedSubProgram: unsigned int m_BlobIndex; ParserBindChannels m_Channels; vector<data:UInt16> m_GlobalKeywordIndices; vector<data:UInt16> m_LocalKeywordIndices; SInt8 m_ShaderHardwareTier; SInt8! m_GpuProgramType; SerializedProgramParameters m_Parameters; int m_ShaderRequirements
@@ -218,6 +223,7 @@ ComputeShader: string m_Name; vector<data:ComputeShaderVariant> variants
 '''
 CLASS_COMPUTE_SHADER = 72
 KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005')): ('Shader', SHADER_2022_3),
+               (CLASS_SHADER, bytes.fromhex('2ec7223dce3af4232b14ae1441bd7999')): ('Shader', SHADER_6000_0),
                (CLASS_SHADER, bytes.fromhex('a30e3dcf6c6d25153d6f64e5e41caf4e')): ('Shader', SHADER_2020_3),
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3),

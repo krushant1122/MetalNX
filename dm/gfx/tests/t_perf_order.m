@@ -1,6 +1,52 @@
 // Default performance paths: real replay and Metal pixels, plus a gated CPU
 // completion owner. No game shaders/files or frame timing is used as an oracle.
+#import <Foundation/Foundation.h>
+#include <pthread.h>
+#include <time.h>
+#include <errno.h>
+
+// Redirect only this translation unit, and only while the CPU budget cases run.
+static int test_budget_active;
+static struct {
+    uint64_t now, event_elapsed, event_ms, event_fence;
+    int event_calls, event_success, cond_calls;
+    int64_t cond_remaining;
+} test_budget;
+static uint64_t test_clock_gettime_nsec_np(clockid_t clock) {
+    return test_budget_active ? test_budget.now : clock_gettime_nsec_np(clock);
+}
+static int test_clock_gettime(clockid_t clock, struct timespec *t) {
+    if (!test_budget_active) return clock_gettime(clock, t);
+    uint64_t ns = test_budget.now + (clock == CLOCK_REALTIME ? 1000000000000ull : 0);
+    *t = (struct timespec){.tv_sec = ns / 1000000000ull, .tv_nsec = ns % 1000000000ull};
+    return 0;
+}
+static int test_pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *deadline) {
+    if (!test_budget_active) return pthread_cond_timedwait(cond, mutex, deadline);
+    test_budget.cond_calls++;
+    test_budget.cond_remaining = (int64_t)deadline->tv_sec * 1000000000ll + deadline->tv_nsec
+        - (int64_t)(test_budget.now + 1000000000000ull);
+    return ETIMEDOUT;
+}
+@interface WaitBudgetEvent : NSObject
+- (BOOL)waitUntilSignaledValue:(uint64_t)value timeoutMS:(uint64_t)milliseconds;
+@end
+@implementation WaitBudgetEvent
+- (BOOL)waitUntilSignaledValue:(uint64_t)value timeoutMS:(uint64_t)milliseconds {
+    test_budget.event_calls++;
+    test_budget.event_fence = value;
+    test_budget.event_ms = milliseconds;
+    test_budget.now += test_budget.event_elapsed;
+    return test_budget.event_success;
+}
+@end
+#define clock_gettime_nsec_np test_clock_gettime_nsec_np
+#define clock_gettime test_clock_gettime
+#define pthread_cond_timedwait test_pthread_cond_timedwait
 #include "../nvn/nvn_mtl.m"
+#undef pthread_cond_timedwait
+#undef clock_gettime
+#undef clock_gettime_nsec_np
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t g_mod[MAX_MOD]; int g_nmod;
@@ -145,6 +191,75 @@ static void hoists(id<MTLLibrary> lib) {
     CHECK("offset sampled storage splits merged pass",draw_samples_rt(drawpr));
     mtl_pool_del(mem); free(mem);
 }
+static void wait_budgets(void) {
+    id<MTLSharedEvent> saved_event = g_ev;
+    uint64_t saved_done = g_done, saved_fence = g_fence;
+    post_rec saved_post = g_postr[1];
+    uint64_t saved_n[WS_N], saved_blk[WS_N], saved_ns[WS_N];
+    for (int i = 0; i < WS_N; i++) { saved_n[i] = g_ws_n[i]; saved_blk[i] = g_ws_blk[i]; saved_ns[i] = g_ws_ns[i]; }
+    unsigned char saved_fend[sizeof g_fend]; memcpy(saved_fend, g_fend, sizeof g_fend);
+    uint64_t saved_wake_n = g_ws_wake_n, saved_wake_ns = g_ws_wake_ns, saved_fb_ns = g_ws_fb_ns;
+    int fast = fast_wake();
+    g_ev = (id<MTLSharedEvent>)[WaitBudgetEvent new]; g_done = 0; g_fence = 1;
+    test_budget_active = 1;
+    const uint64_t hour = 3600000000000ull;
+    const struct {
+        const char *name;
+        uint64_t timeout, elapsed, event_ms, remaining;
+        int fallback;
+    } cases[] = {
+        {"20 ms exhausted", 20000000, 20000000, 20, 0, 0},
+        {"20.5 ms retains 500 us", 20500000, 20000000, 20, 500000, 1},
+        {"early event failure retains full budget", 20000000, 0, 20, 20000000, 1},
+        {"event overshoots deadline", 20000000, 21000000, 20, 0, 0},
+        {"zero timeout", 0, 0, 0, 0, 0},
+        {"sub-ms timeout", 999999, 0, 0, 0, 0},
+        {"one ms exhausted", 1000000, 1000000, 1, 0, 0},
+        {"infinite sentinel keeps one hour per stage", UINT64_MAX, hour, 3600000, hour, 1},
+        {"finite hour plus 20 ms retains 20 ms", hour + 20000000, hour, 3600000, 20000000, 1},
+        {"finite two hours keeps fallback hour clamp", 2 * hour + 20000000, hour, 3600000, hour, 1},
+    };
+    int sites[] = {WS_SYNC, WS_SYNC_NEWEST, WS_ACQ};
+    for (unsigned si = 0; si < sizeof sites / sizeof *sites; si++) {
+        for (unsigned i = 0; i < sizeof cases / sizeof *cases; i++) {
+            const typeof(*cases) *c = &cases[i];
+            test_budget = (typeof(test_budget)){.now = 1999750000, .event_elapsed = c->elapsed};
+            printf("budget: %s, site=%d, fast=%d, ledger=%d\n", c->name, sites[si], fast, ws_on());
+            CHECK("incomplete fence returns false", !mtl_wait_at(1, c->timeout, sites[si]));
+            CHECK("event receives truncated and clamped milliseconds", test_budget.event_calls == fast
+                && (!fast || (test_budget.event_ms == c->event_ms && test_budget.event_fence == 1)));
+            CHECK("only the virtual event advances time", test_budget.now == 1999750000 + (fast ? c->elapsed : 0));
+            int fallback = fast ? c->fallback : 1;
+            uint64_t remaining = fast ? c->remaining : (c->timeout > hour ? hour : c->timeout);
+            CHECK("feedback wait count", test_budget.cond_calls == fallback);
+            CHECK("feedback absolute deadline has only remaining budget", !fallback
+                || test_budget.cond_remaining == (int64_t)remaining);
+        }
+    }
+    test_budget = (typeof(test_budget)){.now = 1999750000}; g_done = 1;
+    CHECK("completed fence returns immediately", mtl_wait_at(1, 20000000, WS_ACQ));
+    CHECK("completed fence skips both waits", !test_budget.event_calls && !test_budget.cond_calls
+        && test_budget.now == 1999750000);
+    g_done = 0;
+    CHECK("public zero-time poll returns false", !mtl_wait(1, 0));
+    CHECK("public zero-time poll skips event and has zero deadline", !test_budget.event_calls
+        && test_budget.cond_calls == 1 && test_budget.cond_remaining == 0);
+    if (fast) {
+        volatile uint32_t event = 0;
+        g_postr[1] = (post_rec){.fence = 1, .n = 1, .ops = calloc(1, sizeof(post_op))};
+        g_postr[1].ops[0] = (post_op){.kind = 1, .val = &event, .v = 47};
+        test_budget = (typeof(test_budget)){.now = 1999750000, .event_elapsed = 7000000, .event_success = 1};
+        CHECK("signaled event succeeds through real post_early", mtl_wait_at(1, 20000000, WS_ACQ));
+        CHECK("CPU event is visible before successful return", event == 47 && g_done == 1
+            && g_postr[1].claimed && !g_postr[1].ops);
+        CHECK("successful early wait skips feedback wait", test_budget.event_calls == 1 && !test_budget.cond_calls);
+    }
+    test_budget_active = 0; memset(&test_budget, 0, sizeof test_budget);
+    g_ev = saved_event; g_done = saved_done; g_fence = saved_fence; g_postr[1] = saved_post;
+    for (int i = 0; i < WS_N; i++) { g_ws_n[i] = saved_n[i]; g_ws_blk[i] = saved_blk[i]; g_ws_ns[i] = saved_ns[i]; }
+    memcpy(g_fend, saved_fend, sizeof g_fend);
+    g_ws_wake_n = saved_wake_n; g_ws_wake_ns = saved_wake_ns; g_ws_fb_ns = saved_fb_ns;
+}
 static dispatch_semaphore_t waiter_started, waiter_done;
 static void *early_waiter(void *arg) {
     dispatch_semaphore_signal(waiter_started); post_early((uintptr_t)arg); dispatch_semaphore_signal(waiter_done); return NULL;
@@ -184,7 +299,7 @@ static void posts(void) {
 }
 int main(int argc, char **argv) { @autoreleasepool {
     if(argc==2 && !strcmp(argv[1],"--cpu")) {
-        alarm(10); setbuf(stdout,NULL); posts();
+        alarm(10); setbuf(stdout,NULL); wait_budgets(); posts();
         printf("CPU completion: %d checks, %d failed\n",checks,failed); return failed!=0;
     }
     alarm(30); setbuf(stdout,NULL); mtl_init();

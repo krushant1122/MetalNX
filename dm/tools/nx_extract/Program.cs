@@ -95,20 +95,8 @@ static class P {
 
     // Open an NSP (PFS0) or the secure partition of an XCI, import the common tickets, list all NCAs
     static List<Nca> OpenNsp(KeySet ks, string path) {
-        IFileSystem pfs; IStorage st0 = new LocalStorage(path, FileAccess.Read);
-        byte[] magic = new byte[4]; st0.Read(0, magic).ThrowIfFailure();
-        if (magic[0] == '7' && magic[1] == 'z') {
-            byte[] buf = new byte[65536]; st0.Read(0, buf).ThrowIfFailure();
-            int idx = -1;
-            for (int i = 0; i <= buf.Length - 4; i++) {
-                if (buf[i] == 'P' && buf[i+1] == 'F' && buf[i+2] == 'S' && buf[i+3] == '0') { idx = i; break; }
-            }
-            if (idx >= 0) {
-                st0.GetSize(out long fullSize).ThrowIfFailure();
-                st0 = new SubStorage(st0, idx, fullSize - idx);
-            }
-        }
-        st0.Read(0x100, magic).ThrowIfFailure();
+        IFileSystem pfs; var st0 = new LocalStorage(path, FileAccess.Read);
+        byte[] magic = new byte[4]; st0.Read(0x100, magic).ThrowIfFailure();
         if (System.Text.Encoding.ASCII.GetString(magic) == "HEAD") {   // XCI: the card header's magic at 0x100
             var xci = new Xci(ks, st0);
             if (!xci.HasPartition(XciPartitionType.Secure)) throw new Exception($"no secure partition in {path}");

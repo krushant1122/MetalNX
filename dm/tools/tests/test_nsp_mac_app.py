@@ -25,6 +25,7 @@ nsp = importlib.util.module_from_spec(spec); spec.loader.exec_module(nsp)
 spec = importlib.util.spec_from_file_location('pack_app', REPO / 'dm/mac/pack_app.py')
 pack_app = importlib.util.module_from_spec(spec); spec.loader.exec_module(pack_app)
 TID = '01008CF01BAAC000'
+TEST_ROOT = Path(os.environ.get('NXNATIVE_TEST_ROOT', tempfile.gettempdir()))
 
 HOST_C = r'''#include <signal.h>
 #include <stdio.h>
@@ -72,7 +73,7 @@ class Copy(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == 'darwin', 'exercises the macOS exec limit')
     def test_long_paths(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as tmp:
             src = Path(tmp) / ('a' * 200) / ('b' * 200) / ('c' * 200); src.mkdir(parents=True)
             dst = Path(tmp) / 'out'; dst.mkdir()
             files = [src / f'{i:04d}_b.metallib' for i in range(2000)]
@@ -83,11 +84,245 @@ class Copy(unittest.TestCase):
             for p in files: self.assertEqual((dst / p.name).read_bytes(), p.name.encode())
 
 
+@unittest.skipUnless(sys.platform == 'darwin', 'uses macOS atomic bundle replacement')
+class PackReuse(unittest.TestCase):
+    """Call the real pack entry point; only external compiler, icon and signing tools are faked. No host is run."""
+    def setUp(self):
+        TEST_ROOT.mkdir(parents=True, exist_ok=True)
+        self.tmp = Path(tempfile.mkdtemp(prefix='pack-reuse-', dir=TEST_ROOT)).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        t = self.tmp
+        for d in ('patched', 'romfs/empty', 'msl', 'profile', 'font', 'aoc/1', 'pso', 'bin', 'sdk', 'source'):
+            (t / d).mkdir(parents=True)
+        files = {
+            'dmhost': b'host', 'patched/main.patched.bin': b'code', 'patched/main.fixups.tsv': b'fixups',
+            'patched/main.gates.tsv': b'gates', 'patched/main.cuts.tsv': b'cuts', 'patched/main.obs.tsv': b'obs', 'patched/nro.tsv': b'nro',
+            'romfs/marker': b'game', 'msl/k.metallib': b'lib', 'msl/k.json': b'{}', 'msl/inputs.tsv': b'stamp',
+            'font/nintendo_ext.ttf': b'font', 'aoc/1/data': b'dlc', 'pso/gpu.mtl4a': b'archive',
+            'pso/prebuilt.tsv': b'prebuilt', 'pso/rest_pairs.tsv': b'rest', 'pso/archive.tsv': b'index',
+            'env.txt': b'DM_TEST=1', 'split.tsv': b'split', 'icon.jpg': b'jpeg', 'source/launcher.c': b'launcher',
+        }
+        for n in pack_app.TABLES: files['profile/' + n] = n.encode()
+        for n, content in files.items(): (t / n).write_bytes(content)
+        for tool in ('clang', 'codesign', 'other-codesign'):
+            (t / 'bin' / tool).write_text('fake ' + tool); (t / 'bin' / tool).chmod(0o755)
+        self.args = pack_app.parse([str(t / 'Game.app'), '--host', str(t / 'dmhost'), '--patched', str(t / 'patched'),
+                                   '--romfs', str(t / 'romfs'), '--msl', str(t / 'msl'), '--tables', str(t / 'profile'), '--font', str(t / 'font'),
+                                   '--aoc', str(t / 'aoc'), '--pso', str(t / 'pso'), '--pso-pairs', str(t / 'split.tsv'), '--env-file', str(t / 'env.txt'),
+                                   '--title-id', TID, '--name', 'Test Game', '--marker', 'marker', '--icon', str(t / 'icon.jpg')])
+        self.commands = []
+        self.clang_version, self.sdk_version = 'clang fixture 1', '27.0'
+        self.clang, self.sdk = t / 'bin/clang', t / 'sdk'
+        self.codesign = t / 'bin/codesign'
+        self.failed_tool = None
+        real_run, real_which = pack_app.run, shutil.which
+        def fake_run(cmd):
+            cmd = [str(c) for c in cmd]; self.commands.append(cmd)
+            name = Path(cmd[0]).name
+            if self.failed_tool == name and (name != 'clang' or '-o' in cmd): raise SystemExit('fixture ' + name + ' failed')
+            if name == 'otool': return 'cmd LC_BUILD_VERSION\n minos 14.0\n'
+            if name == 'xcrun':
+                if '--find' in cmd: return str(self.clang) + '\n'
+                if '--show-sdk-path' in cmd: return str(self.sdk) + '\n'
+                if '--show-sdk-version' in cmd: return self.sdk_version + '\n'
+                if 'clang' in cmd: name = 'clang'
+            if name == 'clang':
+                if '--version' in cmd: return self.clang_version + '\n'
+                out = Path(cmd[cmd.index('-o') + 1]); out.write_bytes(b'fake launcher'); out.chmod(0o755); return ''
+            if name in ('codesign', 'other-codesign'): return ''
+            if name == 'sips': Path(cmd[cmd.index('--out') + 1]).write_bytes(b'png'); return ''
+            if name == 'iconutil': Path(cmd[cmd.index('-o') + 1]).write_bytes(b'icns'); return ''
+            return real_run(cmd)
+        def which(name): return str(self.codesign) if name == 'codesign' else real_which(name)
+        for patch in (mock.patch.object(pack_app, 'run', fake_run), mock.patch.object(pack_app, 'HERE', t / 'source'),
+                      mock.patch.object(pack_app, 'can_clone', return_value=False), mock.patch.object(shutil, 'which', which)):
+            patch.start(); self.addCleanup(patch.stop)
+        self.clone = pack_app.can_clone
+
+    def pack(self):
+        self.commands.clear(); self.clone.reset_mock()
+        with contextlib.redirect_stdout(io.StringIO()) as output: pack_app.pack(self.args)
+        return output.getvalue()
+
+    @property
+    def key(self): return Path(self.args.out + '.key')
+
+    def assert_reused(self):
+        self.assertEqual(self.pack(), f'app: {Path(self.args.out).resolve()}, reused (inputs unchanged)\n')
+        self.clone.assert_not_called()
+        self.assertFalse(any('-o' in c or '--sign' in c or c[0] == '/bin/cp' for c in self.commands))
+
+    def assert_repacked(self):
+        self.assertNotIn('reused (inputs unchanged)', self.pack())
+        self.assertTrue(any('--sign' in c for c in self.commands))
+        self.assertTrue(self.key.is_file())
+
+    def test_retargeted_input_symlink_repacks(self):
+        msl = self.tmp / 'msl'
+        for name in ('left.metallib', 'right.metallib'): (msl / name).write_bytes(b'same library')
+        link = msl / 'linked.metallib'; link.symlink_to('left.metallib')
+        self.pack(); self.assert_reused()
+        link.unlink(); link.symlink_to('right.metallib')
+        self.assert_repacked()
+        packed = Path(self.args.out) / 'Contents/Resources/msl/msl/linked.metallib'
+        self.assertEqual(os.readlink(packed), 'right.metallib')
+        self.assert_reused()
+
+    def test_unchanged_reuses_before_partial_clone_compile_and_sign(self):
+        self.pack()
+        partial = Path(self.args.out + '.partial'); partial.mkdir(); (partial / 'leave').write_text('untouched')
+        self.assert_reused()
+        self.assertEqual((partial / 'leave').read_text(), 'untouched')
+
+    def test_each_selected_file_content_invalidates_even_with_same_stat(self):
+        self.pack()
+        names = ['dmhost', 'patched/main.patched.bin', 'patched/main.fixups.tsv', 'patched/main.gates.tsv', 'patched/main.cuts.tsv',
+                 'patched/main.obs.tsv', 'patched/nro.tsv', 'msl/k.metallib', 'msl/k.json', 'msl/inputs.tsv', 'font/nintendo_ext.ttf',
+                 'pso/gpu.mtl4a', 'pso/prebuilt.tsv', 'pso/rest_pairs.tsv', 'pso/archive.tsv', 'env.txt', 'icon.jpg', 'source/launcher.c']
+        names += ['profile/' + n for n in pack_app.TABLES]
+        for name in names:
+            with self.subTest(name=name):
+                p = self.tmp / name; st = p.stat(); data = p.read_bytes(); p.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+                os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns)); self.assert_repacked()
+
+    def test_romfs_and_aoc_stat_trees_include_paths_modes_and_empty_directories(self):
+        self.pack()
+        for name in ('romfs/marker', 'aoc/1/data'):
+            with self.subTest(name=name):
+                p = self.tmp / name; p.write_bytes(b'changed size'); self.assert_repacked()
+                p.chmod(0o600); self.assert_repacked()
+                p.with_name('added').write_bytes(b'new'); self.assert_repacked()
+                p.with_name('added').rename(p.with_name('renamed')); self.assert_repacked()
+        (self.tmp / 'romfs/new-empty').mkdir(); self.assert_repacked()
+
+    def test_all_metadata_sign_identity_and_selected_paths_invalidate(self):
+        self.pack()
+        for name, value in [('name', 'New Game'), ('version', '2.0'), ('bundle_id', 'org.test.new'), ('category', 'public.app-category.action-games'),
+                            ('lang', 'ja'), ('title_id', '0100000000000000'), ('marker', 'empty'), ('msl_name', 'custom'), ('sign', 'Fixture identity')]:
+            with self.subTest(option=name): setattr(self.args, name, value); self.assert_repacked()
+        for name in ('host', 'patched', 'romfs', 'msl', 'tables', 'font', 'aoc', 'pso', 'env_file', 'icon', 'pso_pairs'):
+            with self.subTest(path=name):
+                old = Path(getattr(self.args, name)); new = old.with_name(old.name + '-other')
+                if old.is_dir(): shutil.copytree(old, new)
+                else: shutil.copy2(old, new)
+                setattr(self.args, name, str(new)); self.assert_repacked()
+
+    def test_compiler_sdk_and_resolved_sign_tool_invalidate(self):
+        self.pack()
+        self.clang_version = 'clang fixture 2'; self.assert_repacked()
+        self.clang.write_text('changed compiler'); self.assert_repacked()
+        self.sdk_version = '28.0'; self.assert_repacked()
+        self.sdk = self.tmp / 'other-sdk'; self.sdk.mkdir(); self.assert_repacked()
+        self.codesign = self.tmp / 'bin/other-codesign'; self.assert_repacked()
+        self.codesign.write_text('changed signing tool'); self.assert_repacked()
+
+    def test_selected_file_modes_and_file_additions_and_removals_invalidate(self):
+        self.pack()
+        (self.tmp / 'dmhost').chmod(0o755); self.assert_repacked()
+        for name in ('patched/new.patched.bin', 'patched/new.fixups.tsv', 'msl/new.metallib', 'font/new.ttf', 'pso/new.mtl4a'):
+            (self.tmp / name).write_text('new')
+        self.assert_repacked()
+        dm = Path(self.args.out) / 'Contents/Resources/dm'
+        self.assertEqual((dm / 'new.patched.bin').read_text(), 'new')
+        (self.tmp / 'profile/c1_full.tsv').unlink(); self.assert_repacked()
+        self.assertFalse((dm / 'c1_full.tsv').exists())
+        (self.tmp / 'patched/new.patched.bin').unlink(); (self.tmp / 'patched/new.fixups.tsv').unlink(); self.assert_repacked()
+
+    def test_output_path_and_optional_inputs_invalidate(self):
+        self.pack()
+        old = Path(self.args.out); new = old.with_name('Other.app')
+        shutil.copytree(old, new); shutil.copy2(self.key, Path(str(new) + '.key'))
+        self.args.out = str(new); self.assert_repacked()
+        for name in ('icon', 'env_file', 'aoc', 'pso', 'pso_pairs'):
+            with self.subTest(option=name): setattr(self.args, name, None); self.assert_repacked()
+
+    def test_packer_source_content_invalidates(self):
+        source = self.tmp / 'source/pack_app.py'; shutil.copy2(pack_app.__file__, source)
+        with mock.patch.object(pack_app, '__file__', str(source)):
+            self.pack(); source.write_text(source.read_text() + '\n# fixture change\n'); self.assert_repacked()
+
+    def test_output_missing_modified_mode_time_path_and_directory_invalidate(self):
+        self.pack()
+        launcher = Path(self.args.out) / 'Contents/MacOS/nxnative'
+        launcher.chmod(0o644); self.assert_repacked()
+        launcher.unlink(); self.assert_repacked()
+        launcher.write_bytes(b'broken'); self.assert_repacked()
+        st = launcher.stat(); os.utime(launcher, ns=(st.st_atime_ns, st.st_mtime_ns + 1000000000)); self.assert_repacked()
+        extra = Path(self.args.out) / 'Contents/extra'; extra.mkdir(); self.assert_repacked()
+        empty = Path(self.args.out) / 'Contents/Resources/romfs/empty'
+        empty.chmod(0o700); self.assert_repacked()
+        empty.rename(empty.with_name('renamed')); self.assert_repacked()
+        shutil.rmtree(self.args.out); self.assert_repacked()
+
+    def test_unpacked_files_and_unselected_split_pairs_do_not_invalidate(self):
+        self.pack()
+        for name in ('msl/k.metal', 'msl/_b_build.json', 'msl/analysis/report.txt', 'patched/main.sites.tsv', 'profile/game.tsv',
+                     'font/readme.txt', 'pso/analysis.txt', 'split.tsv'):
+            p = self.tmp / name; p.parent.mkdir(exist_ok=True); p.write_text('not packed'); self.assert_reused()
+        (self.tmp / 'split.tsv').unlink(); self.assert_reused()
+
+    def test_split_pairs_fallback_is_selected_only_without_profile_pairs(self):
+        (self.tmp / 'profile/pso_pairs.tsv').unlink(); self.pack()
+        target = Path(self.args.out) / 'Contents/Resources/dm/pso_pairs.tsv'
+        self.assertEqual(target.read_bytes(), b'split')
+        (self.tmp / 'split.tsv').write_bytes(b'new split'); self.assert_repacked()
+        self.assertEqual(target.read_bytes(), b'new split')
+
+    def test_missing_selected_inputs_fail_before_reuse_or_partial_creation(self):
+        self.pack()
+        for name in ('dmhost', 'patched/main.fixups.tsv', 'msl/k.metallib', 'romfs/marker', 'pso/prebuilt.tsv', 'env.txt', 'icon.jpg',
+                     'font', 'aoc', 'profile', 'bin/clang', 'sdk', 'bin/codesign', 'source/launcher.c'):
+            with self.subTest(name=name):
+                p = self.tmp / name; hidden = p.with_name(p.name + '.hidden'); p.rename(hidden)
+                try:
+                    with self.assertRaises((SystemExit, OSError)): self.pack()
+                    self.assertFalse(self.key.exists())
+                    self.assertFalse(Path(self.args.out + '.partial').exists())
+                finally: hidden.rename(p)
+                self.pack()
+
+    def test_failed_repack_drops_key_and_keeps_old_app(self):
+        self.pack()
+        before = (Path(self.args.out) / 'Contents/Info.plist').read_bytes()
+        for tool in ('clang', 'codesign'):
+            with self.subTest(tool=tool):
+                self.args.name += ' changed'; self.failed_tool = tool
+                with self.assertRaisesRegex(SystemExit, 'fixture'): self.pack()
+                self.assertFalse(self.key.exists())
+                self.assertEqual((Path(self.args.out) / 'Contents/Info.plist').read_bytes(), before)
+                self.failed_tool = None
+        self.assert_repacked()
+
+    def test_failed_atomic_replacement_drops_key_and_keeps_old_app(self):
+        self.pack(); before = (Path(self.args.out) / 'Contents/Info.plist').read_bytes()
+        self.args.name = 'changed'
+        library = types.SimpleNamespace(renamex_np=mock.Mock(return_value=-1))
+        with mock.patch.object(pack_app.ctypes, 'CDLL', return_value=library), mock.patch.object(pack_app.ctypes, 'get_errno', return_value=5):
+            with self.assertRaises(OSError): self.pack()
+        self.assertFalse(self.key.exists())
+        self.assertEqual((Path(self.args.out) / 'Contents/Info.plist').read_bytes(), before)
+        self.assert_repacked()
+
+    def test_failed_key_write_rolls_back_app_and_drops_key(self):
+        self.pack(); before = (Path(self.args.out) / 'Contents/Info.plist').read_bytes()
+        self.args.name = 'changed'
+        real_replace = Path.replace
+        def fail_key(path, target):
+            if str(target).endswith('.app.key'): raise OSError('fixture key write failed')
+            return real_replace(path, target)
+        with mock.patch.object(Path, 'replace', fail_key):
+            with self.assertRaisesRegex(OSError, 'fixture key write'): self.pack()
+        self.assertFalse(self.key.exists())
+        self.assertFalse(Path(str(self.key) + '.partial').exists())
+        self.assertEqual((Path(self.args.out) / 'Contents/Info.plist').read_bytes(), before)
+        self.assert_repacked()
+
+
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('codesign'), 'needs macOS (clang, codesign, sips, iconutil)')
 class App(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp()).resolve()
+        cls.tmp = Path(tempfile.mkdtemp(dir=TEST_ROOT)).resolve()
         t = cls.tmp
         (t / 'host.c').write_text(HOST_C)
         subprocess.run(['xcrun', 'clang', '-arch', 'arm64', '-o', t / 'dmhost', t / 'host.c'], check=True)
@@ -152,7 +387,7 @@ class App(unittest.TestCase):
         self.assertEqual((dm / 'pso_pairs.tsv').read_text(), 'other-vertex\tother-pixel\n')
 
     def test_split_pso_pairs(self):   # a profile without pso_pairs.tsv: the shader split's copy (--pso-pairs); the profile's own wins when it has one
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(pack_app, 'sign', lambda *a: None), mock.patch('sys.stdout'):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as d, mock.patch.object(pack_app, 'sign', lambda *a: None), mock.patch('sys.stdout'):
             d = Path(d); (d / 'profile').mkdir(); (d / 'profile/shader_map.tsv').write_text('m'); (d / 'split.tsv').write_text('split-vertex\tsplit-pixel\n')
             a = types.SimpleNamespace(**vars(self.args)); a.out = str(self.tmp / 'Split.app'); a.icon = None; a.tables = str(d / 'profile'); a.pso_pairs = str(d / 'split.tsv')
             pack_app.pack(a)
@@ -239,7 +474,7 @@ class App(unittest.TestCase):
         self.assertIn('game data inside this app is missing', args[3])
 
     def test_relocated(self):   # run with the entire build folder unavailable
-        with tempfile.TemporaryDirectory() as dst:
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as dst:
             dst = Path(dst).resolve(); moved = dst / self.app.name; home = dst / 'home'; home.mkdir()
             self.app.rename(moved)
             hidden = self.tmp.with_name(self.tmp.name + '.unavailable')
@@ -256,7 +491,7 @@ class App(unittest.TestCase):
                 moved.rename(self.app)
 
     def test_pack_missing_fixups(self):
-        with tempfile.TemporaryDirectory() as src:
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as src:
             src = Path(src); (src / 'main.patched.bin').write_bytes(b'code')
             a = types.SimpleNamespace(**vars(self.args)); a.patched = str(src); a.out = str(self.tmp / 'Incomplete.app')
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(SystemExit, 'no rewriter fixups'):
@@ -264,7 +499,7 @@ class App(unittest.TestCase):
             self.assertFalse(Path(a.out).exists())
 
     def test_pack_bad_archive(self):   # a pipeline archive folder without its archive or stamp is refused before anything is copied
-        with tempfile.TemporaryDirectory() as src:
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as src:
             src = Path(src); (src / 'prebuilt.tsv').write_text('chain\t0123456789ab\n')
             a = types.SimpleNamespace(**vars(self.args)); a.pso = str(src); a.out = str(self.tmp / 'NoArchive.app')
             with contextlib.redirect_stdout(io.StringIO()) as o, self.assertRaisesRegex(SystemExit, 'no pipeline archive with its prebuilt.tsv'):
@@ -299,7 +534,7 @@ class Script(unittest.TestCase):
         self.assertEqual(nsp.mac_app_name('AC/DC'), 'AC - DC'); self.assertEqual(nsp.mac_app_name(':'), 'nxnative')
 
     def pack_cmd(self, gfx, **kw):
-        ran, tmp = [], Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, tmp); self.said = []
+        ran, tmp = [], Path(tempfile.mkdtemp(dir=TEST_ROOT)); self.addCleanup(shutil.rmtree, tmp); self.said = []
         if kw.get('work'): tmp = kw['work']
         out = tmp / 'G.app'; shutil.rmtree(out, ignore_errors=True)
         def fake_run(cmd, log, env=None, cwd=None, on_line=None):
@@ -310,13 +545,13 @@ class Script(unittest.TestCase):
                 return
             (out / 'Contents/MacOS').mkdir(parents=True); (out / 'Contents/MacOS/dmhost').write_bytes(b'x')
             on_line('step: launcher and host (clones of the game files)')
+            on_line(f'app: {out}')
         g = types.SimpleNamespace(table=lambda n: tmp / 'profile' / n, get={'app_category': 'public.app-category.games', 'romfs_marker': 'a/b'}.get)
         g.id = '01008CF01BAAC000'
         with mock.patch.object(nsp, 'run', fake_run), mock.patch.object(nsp, 'PROG', mock.Mock()), mock.patch.object(nsp, 'chain_of', lambda repo: '0123456789ab'), \
              mock.patch.object(nsp, 'mac_gpu_arch', lambda *a: 'applegpu_g14s'), mock.patch.object(nsp, 'say', self.said.append):
-            clones = nsp.mac_app(sys.executable, REPO, out, 0x01008CF01BAAC000, tmp, tmp / 'ex', tmp / 'patched', tmp / 'dmhost', tmp / 'font', tmp / 'shader/cache' if gfx == 'nvn' else tmp / 'shader',
-                                 kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, gpus=kw.get('gpus', ''))
-        self.assertTrue(clones)
+            nsp.mac_app(sys.executable, REPO, out, 0x01008CF01BAAC000, tmp, tmp / 'ex', tmp / 'patched', tmp / 'dmhost', tmp / 'font', tmp / 'shader/cache' if gfx == 'nvn' else tmp / 'shader',
+                        kw.get('aoc'), gfx, 'en-US', g, 'Game', '1.0.0', 'org.nxnative.01008cf01baac000', None, kw.get('sign', ''), {}, tmp, gpus=kw.get('gpus', ''))
         self.pso_cmd = ran[0] if len(ran) > 1 else None   # pso_offline.py, before the packer
         c = ran[-1]; return {c[i]: c[i + 1] for i in range(3, len(c) - 1) if c[i].startswith('--')}, tmp
 
@@ -335,7 +570,7 @@ class Script(unittest.TestCase):
         self.assertEqual((o['--msl'], o['--aoc'], o['--sign']), (str(tmp / 'shader/vk'), '/x/aoc', 'Developer ID Application: X (T)'))
 
     def test_pso_archive(self):   # an NVN game with shader pairs: its pipeline archive for this Mac's GPU, made by pso_offline.py, goes into the app
-        tmp = Path(tempfile.mkdtemp()); self.addCleanup(shutil.rmtree, tmp)
+        tmp = Path(tempfile.mkdtemp(dir=TEST_ROOT)); self.addCleanup(shutil.rmtree, tmp)
         (tmp / 'profile').mkdir(); (tmp / 'profile/shader_pairs.tsv').write_text('v\tf\n')
         o, _ = self.pack_cmd('nvn', work=tmp)
         self.assertEqual(o['--pso'], str(tmp / 'pso/mac'))

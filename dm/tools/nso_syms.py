@@ -6,51 +6,34 @@ import collections, glob, os, re, struct, sys
 
 def load(path):
     import lz4.block   # Only NSO decoding needs LZ4; profile log parsing does not.
-    try:
-        d = open(path, 'rb').read()
-        if len(d) < 0x70: return b''
-        flags = struct.unpack_from('<I', d, 0xc)[0]
-        segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
-        csz = struct.unpack_from('<III', d, 0x60)
-        img = bytearray(segs[2][1] + segs[2][2] + struct.unpack_from('<I', d, 0x3c)[0])
-        for i, (fo, mo, sz) in enumerate(segs):
-            raw = d[fo:fo + csz[i]]
-            if flags >> i & 1: raw = lz4.block.decompress(raw, uncompressed_size=sz)
-            img[mo:mo + sz] = raw
-        return bytes(img)
-    except Exception:
-        return b''
+    d = open(path, 'rb').read()
+    flags = struct.unpack_from('<I', d, 0xc)[0]
+    segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
+    csz = struct.unpack_from('<III', d, 0x60)
+    img = bytearray(segs[2][1] + segs[2][2] + struct.unpack_from('<I', d, 0x3c)[0])
+    for i, (fo, mo, sz) in enumerate(segs):
+        raw = d[fo:fo + csz[i]]
+        if flags >> i & 1: raw = lz4.block.decompress(raw, uncompressed_size=sz)
+        img[mo:mo + sz] = raw
+    return bytes(img)
 
 def dynsyms(img):
-    try:
-        if len(img) < 8: return []
-        mod0 = struct.unpack_from('<I', img, 4)[0]
-        if mod0 + 8 > len(img) or img[mod0:mod0 + 4] != b'MOD0': return []
-        dyn_off = struct.unpack_from('<i', img, mod0 + 4)[0]
-        if not dyn_off: return []
-        dyn = mod0 + dyn_off
-        tags = {}
-        for i in range(4096):
-            if dyn + (i + 1) * 16 > len(img): break
-            t, v = struct.unpack_from('<qQ', img, dyn + i * 16)
-            if t == 0: break
-            tags.setdefault(t, v)
-        if 6 not in tags or 5 not in tags:
-            return []
-        symtab, strtab = tags[6], tags[5]
-        n = struct.unpack_from('<I', img, tags[4] + 4)[0] if 4 in tags else (strtab - symtab) // 24
-        out = []
-        for i in range(1, n):
-            if symtab + (i + 1) * 24 > len(img): break
-            name, info, other, shndx, value, size = struct.unpack_from('<IBBHQQ', img, symtab + i * 24)
-            if strtab + name >= len(img): continue
-            end = img.find(b'\0', strtab + name)
-            if end == -1: end = len(img)
-            s = img[strtab + name:end].decode('latin1', errors='replace')
-            if s: out.append((s, shndx != 0, info >> 4))
-        return out
-    except Exception:
-        return []
+    mod0 = struct.unpack_from('<I', img, 4)[0]
+    assert img[mod0:mod0 + 4] == b'MOD0', 'no MOD0'
+    dyn = mod0 + struct.unpack_from('<i', img, mod0 + 4)[0]
+    tags = {}
+    for i in range(4096):
+        t, v = struct.unpack_from('<qQ', img, dyn + i * 16)
+        if t == 0: break
+        tags.setdefault(t, v)
+    symtab, strtab = tags[6], tags[5]
+    n = struct.unpack_from('<I', img, tags[4] + 4)[0] if 4 in tags else (strtab - symtab) // 24
+    out = []
+    for i in range(1, n):
+        name, info, other, shndx, value, size = struct.unpack_from('<IBBHQQ', img, symtab + i * 24)
+        s = img[strtab + name:img.index(b'\0', strtab + name)].decode('latin1')
+        if s: out.append((s, shndx != 0, info >> 4))
+    return out
 
 def imports(exefs, mod='main'): return {s for s, defined, _ in dynsyms(load(os.path.join(exefs, mod))) if not defined}
 def exports(exefs, mod='sdk'): return {s for s, defined, bind in dynsyms(load(os.path.join(exefs, mod))) if defined and bind in (1, 2)}

@@ -2275,6 +2275,188 @@
     ]
   },
   {
+    "titleId": "01009D901BC56000",
+    "name": "Donkey Kong Country Returns HD",
+    "engine": "Unity 6000.0.28f1 IL2CPP",
+    "graphicsApi": "NVN",
+    "testedDisplayVersion": "1.1.0",
+    "testedBuildNote": "1.1.0",
+    "testedFps": 60,
+    "hasCustomPatches": false,
+    "supportedVersions": [
+      {
+        "versionCode": "v65536",
+        "displayVersion": "1.1.0",
+        "isTested": true,
+        "mainBuildId": "991eccf3339153e469f15936fac59c52"
+      }
+    ],
+    "unsupportedVersionsNote": "Older or unlisted game versions (e.g. Day-1 v1.0.0 without updates) lack registered shader pairs and 60 FPS patches. For guaranteed stability, use update 1.1.0.",
+    "recipes": [
+      {
+        "id": "recipe_fps",
+        "name": "60 FPS Target & Interval Pacing",
+        "category": "Performance",
+        "description": "Enforces 60 FPS frame interval pacing. For games with patches.py (e.g. Zelda, Astral Chain, Mario Kart), also synchronizes internal game ticks.",
+        "envKey": "NVN_TARGET_FPS",
+        "defaultValue": "60",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_metalfx",
+        "name": "Apple MetalFX AI Spatial Scaler",
+        "category": "Graphics",
+        "description": "Applies Apple Silicon neural spatial upscaling from internal resolution to native display with zero perceptible latency.",
+        "envKey": "NVN_ENABLE_METALFX",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_async_shaders",
+        "name": "Async Metal PSO Compilation",
+        "category": "Performance",
+        "description": "Compiles Metal Shading Language pipeline state objects across background worker threads before presentation, eliminating first-time stutter.",
+        "envKey": "NVN_ASYNC_SHADERS",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_docked",
+        "name": "Docked Power Profile (1080p)",
+        "category": "System",
+        "description": "Reports docked console power state to game logic to load maximum texture quality, shadow resolution, and draw distance.",
+        "envKey": "DM_OPMODE",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_anisotropy",
+        "name": "16\u00d7 Anisotropic Texture Filtering",
+        "category": "Graphics",
+        "description": "Forces 16\u00d7 anisotropic sampling on all 3D surface and terrain textures, sharpening oblique angles.",
+        "envKey": "NVN_ANISOTROPY",
+        "defaultValue": "16",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_present_snap",
+        "name": "Present Snap GPU Pacing",
+        "category": "Performance",
+        "description": "Schedules present snapshots to prevent Apple Silicon GPU frequency drops on passively cooled Macs.",
+        "envKey": "DM_PRESENT_SNAP",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_hud",
+        "name": "Apple Metal Performance HUD",
+        "category": "Telemetry",
+        "description": "Draws macOS Metal developer performance overlay with real-time frame time graphs, GPU core usage, and memory pressure.",
+        "envKey": "DM_METAL_HUD",
+        "defaultValue": "0",
+        "enabled": false,
+        "hasPatchBytecode": false
+      }
+    ]
+  },
+  {
+    "titleId": "0100C1F0051B6000",
+    "name": "Donkey Kong Country: Tropical Freeze",
+    "engine": "Retro Studios' engine",
+    "graphicsApi": "NVN",
+    "testedDisplayVersion": "1.0.2",
+    "testedBuildNote": "1.0.2",
+    "testedFps": 60,
+    "hasCustomPatches": false,
+    "supportedVersions": [
+      {
+        "versionCode": "v131072",
+        "displayVersion": "1.0.2",
+        "isTested": true,
+        "mainBuildId": "f48bd40d89b529c114f17c7909fe6aa4"
+      }
+    ],
+    "unsupportedVersionsNote": "Older or unlisted game versions (e.g. Day-1 v1.0.0 without updates) lack registered shader pairs and 60 FPS patches. For guaranteed stability, use update 1.0.2.",
+    "recipes": [
+      {
+        "id": "recipe_fps",
+        "name": "60 FPS Target & Interval Pacing",
+        "category": "Performance",
+        "description": "Enforces 60 FPS frame interval pacing. For games with patches.py (e.g. Zelda, Astral Chain, Mario Kart), also synchronizes internal game ticks.",
+        "envKey": "NVN_TARGET_FPS",
+        "defaultValue": "60",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_metalfx",
+        "name": "Apple MetalFX AI Spatial Scaler",
+        "category": "Graphics",
+        "description": "Applies Apple Silicon neural spatial upscaling from internal resolution to native display with zero perceptible latency.",
+        "envKey": "NVN_ENABLE_METALFX",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_async_shaders",
+        "name": "Async Metal PSO Compilation",
+        "category": "Performance",
+        "description": "Compiles Metal Shading Language pipeline state objects across background worker threads before presentation, eliminating first-time stutter.",
+        "envKey": "NVN_ASYNC_SHADERS",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_docked",
+        "name": "Docked Power Profile (1080p)",
+        "category": "System",
+        "description": "Reports docked console power state to game logic to load maximum texture quality, shadow resolution, and draw distance.",
+        "envKey": "DM_OPMODE",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_anisotropy",
+        "name": "16\u00d7 Anisotropic Texture Filtering",
+        "category": "Graphics",
+        "description": "Forces 16\u00d7 anisotropic sampling on all 3D surface and terrain textures, sharpening oblique angles.",
+        "envKey": "NVN_ANISOTROPY",
+        "defaultValue": "16",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_present_snap",
+        "name": "Present Snap GPU Pacing",
+        "category": "Performance",
+        "description": "Schedules present snapshots to prevent Apple Silicon GPU frequency drops on passively cooled Macs.",
+        "envKey": "DM_PRESENT_SNAP",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_hud",
+        "name": "Apple Metal Performance HUD",
+        "category": "Telemetry",
+        "description": "Draws macOS Metal developer performance overlay with real-time frame time graphs, GPU core usage, and memory pressure.",
+        "envKey": "DM_METAL_HUD",
+        "defaultValue": "0",
+        "enabled": false,
+        "hasPatchBytecode": false
+      }
+    ]
+  },
+  {
     "titleId": "0100606026F12000",
     "name": "FINAL FANTASY RESONANCE",
     "engine": "Unreal Engine 5.6.1",
@@ -3199,18 +3381,6 @@
         "displayVersion": "4.0.0",
         "isTested": true,
         "mainBuildId": "2c336a9bcf79c3040ce506cdd391b578"
-      },
-      {
-        "versionCode": "v1441792",
-        "displayVersion": "3.0.3",
-        "isTested": true,
-        "mainBuildId": "6a85262f21b903649bd7c62628d26e43"
-      },
-      {
-        "versionCode": "v1507328",
-        "displayVersion": "4.0.1",
-        "isTested": true,
-        "mainBuildId": "158c0c7399aabd7bf83795c2ef3484c7"
       }
     ],
     "unsupportedVersionsNote": "Older or unlisted game versions (e.g. Day-1 v1.0.0 without updates) lack registered shader pairs and 60 FPS patches. For guaranteed stability, use update 4.0.0.",
@@ -3679,6 +3849,97 @@
         "defaultValue": "60",
         "enabled": true,
         "hasPatchBytecode": true
+      },
+      {
+        "id": "recipe_metalfx",
+        "name": "Apple MetalFX AI Spatial Scaler",
+        "category": "Graphics",
+        "description": "Applies Apple Silicon neural spatial upscaling from internal resolution to native display with zero perceptible latency.",
+        "envKey": "NVN_ENABLE_METALFX",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_async_shaders",
+        "name": "Async Metal PSO Compilation",
+        "category": "Performance",
+        "description": "Compiles Metal Shading Language pipeline state objects across background worker threads before presentation, eliminating first-time stutter.",
+        "envKey": "NVN_ASYNC_SHADERS",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_docked",
+        "name": "Docked Power Profile (1080p)",
+        "category": "System",
+        "description": "Reports docked console power state to game logic to load maximum texture quality, shadow resolution, and draw distance.",
+        "envKey": "DM_OPMODE",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_anisotropy",
+        "name": "16\u00d7 Anisotropic Texture Filtering",
+        "category": "Graphics",
+        "description": "Forces 16\u00d7 anisotropic sampling on all 3D surface and terrain textures, sharpening oblique angles.",
+        "envKey": "NVN_ANISOTROPY",
+        "defaultValue": "16",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_present_snap",
+        "name": "Present Snap GPU Pacing",
+        "category": "Performance",
+        "description": "Schedules present snapshots to prevent Apple Silicon GPU frequency drops on passively cooled Macs.",
+        "envKey": "DM_PRESENT_SNAP",
+        "defaultValue": "1",
+        "enabled": true,
+        "hasPatchBytecode": false
+      },
+      {
+        "id": "recipe_hud",
+        "name": "Apple Metal Performance HUD",
+        "category": "Telemetry",
+        "description": "Draws macOS Metal developer performance overlay with real-time frame time graphs, GPU core usage, and memory pressure.",
+        "envKey": "DM_METAL_HUD",
+        "defaultValue": "0",
+        "enabled": false,
+        "hasPatchBytecode": false
+      }
+    ]
+  },
+  {
+    "titleId": "010057D006492000",
+    "name": "OCTOPATH TRAVELER",
+    "engine": "Unreal Engine 4.18",
+    "graphicsApi": "NVN",
+    "testedDisplayVersion": "1.0.5",
+    "testedBuildNote": "1.0.5",
+    "testedFps": 60,
+    "hasCustomPatches": false,
+    "supportedVersions": [
+      {
+        "versionCode": "v327680",
+        "displayVersion": "1.0.5",
+        "isTested": true,
+        "mainBuildId": "67dacc049ceee8585b1583336c565b43"
+      }
+    ],
+    "unsupportedVersionsNote": "Older or unlisted game versions (e.g. Day-1 v1.0.0 without updates) lack registered shader pairs and 60 FPS patches. For guaranteed stability, use update 1.0.5.",
+    "recipes": [
+      {
+        "id": "recipe_fps",
+        "name": "60 FPS Target & Interval Pacing",
+        "category": "Performance",
+        "description": "Enforces 60 FPS frame interval pacing. For games with patches.py (e.g. Zelda, Astral Chain, Mario Kart), also synchronizes internal game ticks.",
+        "envKey": "NVN_TARGET_FPS",
+        "defaultValue": "60",
+        "enabled": true,
+        "hasPatchBytecode": false
       },
       {
         "id": "recipe_metalfx",

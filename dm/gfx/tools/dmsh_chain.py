@@ -15,19 +15,6 @@
 import os, sys, hashlib, subprocess
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HERE = os.path.dirname(os.path.abspath(__file__)); GFX = os.path.dirname(HERE); HOME = os.path.expanduser('~')
-TOOL_PATHS = [
-    '/Applications/MetalNX.app/Contents/Resources/bin',
-    '/Applications/MetalNX.app/Contents/Resources',
-    os.path.expanduser('~/.switch'),
-    os.path.join(os.path.dirname(os.path.dirname(GFX)), 'tools/launcher/bin'),
-    os.path.join(os.path.dirname(os.path.dirname(GFX)), 'tools/bin'),
-    '/opt/homebrew/bin',
-    '/opt/homebrew/sbin',
-    '/usr/local/bin',
-]
-for _tp in TOOL_PATHS:
-    if os.path.isdir(_tp) and _tp not in os.environ.get('PATH', '').split(':'):
-        os.environ['PATH'] = f"{_tp}:{os.environ.get('PATH', '')}"
 FILES = ['tools/dmsh_chain.py', 'tools/dmsh_build.py', 'tools/dmsh_atomic.py', 'tools/dmsh_fetch.py', 'tools/dmsh_vin.py', 'tools/dmsh_pull.py', 'tools/dmsh_pull.metal', 'tools/dmsh_geometry.py', 'tools/dmsh_facts.py', 'tools/dmsh_xlate/Program.cs', 'tools/dmsh_xlate/dmsh_xlate.csproj', '../ios/tools/ios_metal.py', 'tools/dmsh_chain.lock']
 # This target-specific lowering lives in the vendored translator. Include its
 # sources as well as the rebuilt DLL fingerprint; no old shader cache can bypass it.
@@ -36,7 +23,7 @@ FILES += ['../third_party/ryujinx/src/Ryujinx.Graphics.Shader/' + f for f in (
     'Translation/TranslationFlags.cs', 'Translation/HostCapabilities.cs',
     'Translation/TranslatorContext.cs', 'Translation/EmitterContext.cs', 'Translation/ShaderDefinitions.cs', 'CodeGen/Spirv/Instructions.cs',
     'StructuredIr/ShaderProperties.cs', 'Translation/Optimizations/BindlessElimination.cs')]
-INPUT_TABLES = ['shader_facts.tsv', 'shader_map.tsv', 'shader_map.tsv.conflicts.tsv', 'shader_pairs.tsv', 'bf_want.tsv']   # in the game profile folder
+INPUT_TABLES = ['shader_facts.tsv', 'shader_map.tsv', 'shader_map.tsv.conflicts.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv', 'bf_want.tsv']   # in the game profile folder
 LOCK = os.path.join(HERE, 'dmsh_chain.lock'); HEADER = os.path.join(GFX, 'nvn/dmsh_chain.h')
 STAMP = 'inputs.tsv'   # in the library directory b-<V>/
 # the translator defaults to the in-repo build that matches the lock file (a rebuilt dll has different fingerprints)
@@ -85,36 +72,8 @@ def sha16(p): return hashlib.sha256(open(p, 'rb').read()).hexdigest()[:16]
 def tools_now():
     """Actual tool fingerprints: translator dll (including the Ryujinx shader library), spirv-cross, metal compiler (macOS / iOS)"""
     t = {}
-    ref_dir = os.path.join(HERE, 'dmsh_xlate_bin')
-    for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll'):
-        dll_path = os.path.join(XLATE_DIR, dll)
-        if not os.path.exists(dll_path):
-            dll_path = os.path.join(ref_dir, dll)
-        t[dll] = sha16(dll_path) if os.path.exists(dll_path) else 'missing'
-    xlate_bin = os.environ.get('XLATE') or os.path.join(XLATE_DIR, 'dmsh_xlate')
-    res = subprocess.run([xlate_bin, '--source-sha'], capture_output=True, text=True)
-    out = res.stdout.strip()
-    if not out:
-        import shutil
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
-        candidates = [
-            os.path.join(repo_root, 'tools/bin/dmsh_xlate'),
-            os.path.expanduser('~/.switch/dmsh_xlate'),
-            '/Applications/MetalNX.app/Contents/Resources/bin/dmsh_xlate',
-            '/Applications/MetalNX.app/Contents/Resources/dmsh_xlate',
-        ]
-        for c in candidates:
-            if os.path.isfile(c) and os.access(c, os.X_OK) and os.path.getsize(c) > 50_000_000:
-                try:
-                    shutil.copy2(c, xlate_bin)
-                    os.chmod(xlate_bin, 0o755)
-                    res = subprocess.run([xlate_bin, '--source-sha'], capture_output=True, text=True)
-                    out = res.stdout.strip()
-                    if out:
-                        break
-                except Exception:
-                    pass
-    t['xlate_source'] = out
+    for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll'): t[dll] = sha16(os.path.join(XLATE_DIR, dll))
+    t['xlate_source'] = subprocess.run([os.path.join(XLATE_DIR, 'dmsh_xlate'), '--source-sha'], capture_output=True, text=True).stdout.strip()
     sc = subprocess.run(['which', 'spirv-cross'], capture_output=True, text=True).stdout.strip()
     t['spirv-cross'] = sha16(sc) if sc else 'missing'
     for sdk in ('macosx', 'iphoneos'):
@@ -126,12 +85,9 @@ def xlate_source_sha():   # same convention as dmsh_xlate --source-sha: the embe
     return hashlib.sha256(b''.join(open(os.path.join(HERE, 'dmsh_xlate', f), 'rb').read() for f in ('Program.cs', 'dmsh_xlate.csproj'))).hexdigest()[:16]
 
 def check_tools():
-    if os.environ.get('DMSH_IGNORE_LOCK') == '1' or os.environ.get('METALNX_APP') == '1':
-        return []
     want = dict(l.rstrip('\n').split('\t', 1) for l in open(LOCK) if '\t' in l and not l.startswith('#'))
     now = tools_now(); bad = [f'{k}: lock {want.get(k)} / actual {v}' for k, v in now.items() if want.get(k) != v]
-    if now.get('xlate_source') and now['xlate_source'] != xlate_source_sha():
-        bad.append(f'the translator was not built from the in-repo source: embedded source {now["xlate_source"]} / in repo {xlate_source_sha()} (rebuild dmsh_xlate)')
+    if now['xlate_source'] != xlate_source_sha(): bad.append(f'the translator was not built from the in-repo source: embedded source {now["xlate_source"]} / in repo {xlate_source_sha()} (rebuild dmsh_xlate)')
     return bad
 
 def header_text(v):
