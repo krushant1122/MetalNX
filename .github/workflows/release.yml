@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name to release (e.g. v2.2.3)'
+        required: true
+        default: 'v2.2.3'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build DMG & Publish Release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Lint & Test Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install ruff lz4 capstone fonttools nsz
+          pip install backports.zstd || true
+
+      - name: Run Full MetalNX Test Suite
+        run: |
+          bash tools/launcher/tests/run_tests.sh
+
+      - name: Build MetalNX App Bundle & DMG Installer
+        run: |
+          chmod +x tools/launcher/build.sh
+          tools/launcher/build.sh
+
+      - name: DMG Smoke & Quarantine Verification Test
+        run: |
+          DMG_FILE=$(ls build/launcher/MetalNX-*.dmg | head -n 1)
+          echo "Testing built DMG: $DMG_FILE"
+          test -f "$DMG_FILE" || (echo "DMG not found" && exit 1)
+
+          # Mount disk image
+          MOUNT_DIR="/Volumes/MetalNX_Smoke"
+          hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+
+          # Verify bundle structure
+          APP_DIR="$MOUNT_DIR/MetalNX.app"
+          test -d "$APP_DIR"
+          test -f "$APP_DIR/Contents/MacOS/MetalNX"
+          test -f "$APP_DIR/Contents/Resources/install_nsp.py"
+          test -f "$APP_DIR/Contents/Resources/games_db.json"
+
+          # Verify ad-hoc codesigning on outer app and inner binaries
+          codesign --verify --deep --strict "$APP_DIR"
+
+          # Test macOS quarantine simulation
+          xattr -w com.apple.quarantine "0181;655e8c10;MetalNX;$(uuidgen)" "$APP_DIR"
+
+          # Verify python and scripts execute under quarantine
+          /usr/bin/python3 "$APP_DIR/Contents/Resources/install_nsp.py" --help > /dev/null
+
+          # Unmount
+          hdiutil detach "$MOUNT_DIR" -quiet
+          echo "✓ DMG Smoke & Quarantine test passed successfully"
+
+      - name: Create GitHub Release and Upload Assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          fi
+          echo "Publishing release for $TAG"
+
+          gh release create "$TAG" \
+            build/launcher/MetalNX-*.dmg \
+            --title "MetalNX $TAG" \
+            --generate-notes

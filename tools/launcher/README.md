@@ -247,10 +247,12 @@ MetalNX includes an automated Swift unit test suite verifying library scanning, 
 | `tools/launcher/build.sh` | Production compilation, app bundling, codesigning, and `.dmg` packaging script |
 | `tools/launcher/make_icon.py` | Minimalist geometric MetalNX icon generator (`AppIcon.icns`) |
 | `tools/launcher/install_nsp.py` | Streaming port installer backend, live verifier, and recipe pre-seeder |
-| `tools/launcher/tests/TestGameDetection.swift` | 51-test automated unit test suite |
-| `tools/launcher/tests/run_tests.sh` | Standalone test runner script |
+| `tools/launcher/tests/TestGameDetection.swift` | 54-test automated unit test suite for game detection and recipes |
+| `tools/launcher/tests/TestPipelineRegression.swift` | Pipeline regression suite verifying bug fixes (Clusters A & B) |
+| `tools/launcher/tests/TestPipelineFixes.swift` | Pipeline validation suite verifying output paths, hermetic Python, and toolchain checks |
+| `tools/launcher/tests/run_tests.sh` | Standalone test runner executing all 61 automated tests |
 | `build/launcher/MetalNX.app` | Compiled native macOS application |
-| `build/launcher/MetalNX-2.2.0.dmg` | Drag-and-drop macOS disk image installer |
+| `build/launcher/MetalNX-2.2.3.dmg` | Drag-and-drop macOS disk image installer |
 | `/Applications/MetalNX.app` | Installed system application |
 
 ---

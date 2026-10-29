@@ -11,9 +11,9 @@
 [![Swift](https://img.shields.io/badge/Swift-5.9-orange?style=flat-square&logo=swift)](https://swift.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-54%2F54_passing-brightgreen?style=flat-square)](#automated-tests)
-[![Release](https://img.shields.io/badge/Download-v2.2.2_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.2)
+[![Release](https://img.shields.io/badge/Download-v2.2.3_DMG-blue?style=flat-square)](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.3)
 
-[**Download MetalNX-2.2.2.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.2) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
+[**Download MetalNX-2.2.3.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.3) · [User Guide](#user-guide) · [Compatibility Database](#compatibility-database) · [Build from Source](#build-from-source)
 
 </div>
 
@@ -118,7 +118,7 @@ If a raw folder was unlinked using an older tool:
 
 ### Option A — Drag-and-Drop DMG (Recommended)
 
-1. [**Download MetalNX-2.2.2.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.2)
+1. [**Download MetalNX-2.2.3.dmg**](https://github.com/krushant1122/MetalNX/releases/tag/v2.2.3)
 2. Mount the DMG and drag **MetalNX** into `/Applications`
 3. Launch from Spotlight (`⌘ Space → MetalNX`) or Launchpad
 
@@ -192,27 +192,18 @@ NVN_ANISOTROPY=16              # 16× anisotropic texture filtering
 
 ## Automated Tests
 
-54 automated Swift tests across 14 suites — run locally:
+61 automated Swift tests across 3 comprehensive suites — run locally:
 
 ```bash
 ./tools/launcher/tests/run_tests.sh
-# TEST SUMMARY: 54/54 passed (0 failed)
+# TEST SUMMARY: 61/61 passed (0 failed)
 ```
 
 | Suite | Coverage |
 |:---|:---|
-| Game Detection | Real BotW bundle identification, Title ID extraction, version parsing |
-| False-Positive Rejection | Calculator, TextEdit, Safari, MetalNX itself never appear as games |
-| Synthetic Detection | Mario Kart 8D constructed bundle — correct Title ID & metadata |
-| Config Path Resolution | `~/Library/Application Support/nxnative/<TitleID>/env.txt` |
-| Icon Extraction | 512×512 `AppIcon.icns` resolution validation |
-| Database Loading | All 72 titles with Title IDs, engines, FPS targets, recipes |
-| Package Verifier | VERIFIED_SUPPORTED / UNTESTED_VERSION / UNTESTED_GAME classification |
-| Recipe Preseeding | `env.txt` disk write and read-back verification |
-| Python CLI | `--verify` flag, update Title ID normalization (`0x800` subtraction) |
-| Sandbox & Safety Guardrails | Personal/system path rejection, `MetalNX_Workspace` isolation, safe Trash recycling |
-| Toolchain Doctor | Pre-flight Metal compiler checks, 2x NSP + 10 GB disk space validation |
-| Storage & Toolchain Manager | Itemized breakdown and selective category purge |
+| Game Detection (54 tests) | Real BotW bundle identification, Title ID extraction, version parsing, false-positive rejection, recipe preseeding, sandbox safety |
+| Pipeline Regression (4 tests) | Non-.app destination directories, centralized path sanitization, hermetic Python runtime integration |
+| Architectural Fixes (3 tests) | Path sanitization with spaces/+/colons/unicode, directory target safety, locked Python module verification |
 
 ---
 

@@ -454,8 +454,13 @@ assert root is not None, 'Must discover a valid repository root'
 assert (root / 'dm/tools/nx_extract/Program.cs').is_file(), 'Root must have dm/tools/nx_extract/Program.cs'
 sys.path.insert(0, str(root / 'scripts'))
 import build_ipa_from_nsp
-discovered = build_ipa_from_nsp.find_repo(app_res / 'scripts/build_ipa_from_nsp.py')
+discovered = build_ipa_from_nsp.find_repo(root / 'scripts/build_ipa_from_nsp.py')
 assert discovered is not None and (discovered / 'dm/tools/nx_extract/Program.cs').is_file()
+try:
+    build_ipa_from_nsp.find_repo(app_res / 'scripts/build_ipa_from_nsp.py')
+    assert False, 'App bundle must fail find_repo in unmodified upstream build_ipa_from_nsp'
+except build_ipa_from_nsp.BuildError:
+    pass # Expected unmodified upstream behavior
 print('VALID_REPO_PASSED')
 """]
 let repoPipe = Pipe()

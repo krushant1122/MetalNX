@@ -4,6 +4,7 @@ build/
 LauncherBinary
 tools/bin/
 tools/launcher/bin/
+tools/launcher/python_env/
 .iosdd/
 .iosdd_mac/
 .iosdd_*/

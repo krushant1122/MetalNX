@@ -10,7 +10,7 @@ BUILD_DIR="$REPO_ROOT/build/launcher"
 APP_NAME="MetalNX.app"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME"
 INSTALL_DIR="/Applications/$APP_NAME"
-VERSION="2.2.2"
+VERSION="2.2.3"
 
 echo "=== Building MetalNX Control Center v$VERSION ==="
 mkdir -p "$BUILD_DIR"
@@ -18,11 +18,11 @@ mkdir -p "$BUILD_DIR"
 # 5-second architectural lint step: catch undefined variables (F821) and syntax errors before packaging
 echo "-> Running pre-build static lint check..."
 if [ -f "$DIR/bin/uv" ]; then
-    "$DIR/bin/uv" run --with ruff ruff check --select F821,F822,F823,E9,F63 "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+    "$DIR/bin/uv" run --with ruff ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
 elif command -v uv &> /dev/null; then
-    uv run --with ruff ruff check --select F821,F822,F823,E9,F63 "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+    uv run --with ruff ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
 elif command -v ruff &> /dev/null; then
-    ruff check --select F821,F822,F823,E9,F63 "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
+    ruff check --select F821,F822,F823,E9,F63 --exclude python_env "$REPO_ROOT/tools/launcher/" "$REPO_ROOT/scripts/" "$REPO_ROOT/dm/"
 fi
 echo "✓ Pre-build lint check passed (zero undefined variables)"
 
@@ -92,6 +92,15 @@ if [ -f "$REPO_ROOT/tools/bin/dmsh_xlate" ]; then
     chmod +x "$APP_BUNDLE/Contents/Resources/bin/dmsh_xlate"
 fi
 
+# Bundle hermetic Python environment if present
+if [ -d "$DIR/python_env" ]; then
+    echo "-> Bundling hermetic Python virtual environment..."
+    cp -R "$DIR/python_env" "$APP_BUNDLE/Contents/Resources/python_env"
+elif [ -d "$HOME/Library/Application Support/MetalNX/python_env" ]; then
+    echo "-> Bundling hermetic Python virtual environment from cache..."
+    cp -R "$HOME/Library/Application Support/MetalNX/python_env" "$APP_BUNDLE/Contents/Resources/python_env"
+fi
+
 # Write Info.plist
 cat << EOF > "$APP_BUNDLE/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -132,7 +141,9 @@ cat << EOF > "$APP_BUNDLE/Contents/Info.plist"
 </plist>
 EOF
 
-echo "-> Code signing bundle (ad-hoc)..."
+echo "-> Code signing all nested executables, dylibs, and .so files (ad-hoc)..."
+find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" \) -exec codesign --force --sign - {} +
+find "$APP_BUNDLE" -type f -perm +111 -exec codesign --force --sign - {} +
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 echo "✓ Build complete: $APP_BUNDLE"

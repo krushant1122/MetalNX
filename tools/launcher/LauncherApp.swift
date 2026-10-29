@@ -362,7 +362,7 @@ struct GameIconView: View {
     }
 }
 
-let kMetalNXVersion = "2.2.2"
+let kMetalNXVersion = "2.2.3"
 
 // MARK: - Safety & Sandbox Guardrails
 let kProtectedSystemPaths: Set<String> = {
@@ -1031,8 +1031,12 @@ class PortInstallerViewModel: ObservableObject {
         self.activeProcess = process
 
         let pythonCandidates = [
-            "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3",
+            "\(Bundle.main.resourcePath ?? "")/python_env/bin/python",
+            "\(home)/Library/Application Support/MetalNX/python_env/bin/python",
+            "\(home)/Library/Application Support/MetalNX/python_env/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
             "/opt/homebrew/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3",
             "/usr/bin/python3"
         ]
         let pythonPath = pythonCandidates.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? "/usr/bin/python3"
@@ -1115,11 +1119,10 @@ class PortInstallerViewModel: ObservableObject {
                                 self.isCompleted = true
                                 self.isInstalling = false
                                 self.etaSeconds = 0
-                                if msg.contains("/Applications/") {
-                                    let parts = msg.components(separatedBy: ": ")
-                                    if parts.count >= 2 {
-                                        self.installedAppPath = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-                                    }
+                                if let range = msg.range(of: "/[^\"]+\\.app", options: .regularExpression) {
+                                    self.installedAppPath = String(msg[range])
+                                } else if let parts = msg.components(separatedBy: "port: ").last, parts.contains(".app") {
+                                    self.installedAppPath = parts.trimmingCharacters(in: .whitespacesAndNewlines)
                                 }
                                 onSuccess(self.installedAppPath ?? "")
                             } else if status == "ERROR" {
@@ -1145,7 +1148,18 @@ class PortInstallerViewModel: ObservableObject {
                 guard let self = self else { return }
                 self.isInstalling = false
                 if proc.terminationStatus != 0 && self.errorMessage == nil {
-                    let err = "Compilation process exited with code \(proc.terminationStatus)."
+                    var lastErrLine: String? = nil
+                    for line in self.consoleLogs.reversed() {
+                        let lower = line.lowercased()
+                        if lower.contains("error") || lower.contains("failed") || lower.contains("missing") || lower.contains("fatal") || lower.contains("abort") || lower.contains("killed") {
+                            lastErrLine = line
+                            break
+                        }
+                    }
+                    if lastErrLine == nil && !self.consoleLogs.isEmpty {
+                        lastErrLine = self.consoleLogs.last
+                    }
+                    let err = lastErrLine ?? "Compilation process exited with code \(proc.terminationStatus)."
                     self.errorMessage = err
                     self.recordCrashReport(reason: err)
                 }
@@ -1162,6 +1176,84 @@ class PortInstallerViewModel: ObservableObject {
         }
     }
 
+    func sanitizeLogText(_ text: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var cleaned = text.replacingOccurrences(of: home, with: "~")
+        if let envHome = ProcessInfo.processInfo.environment["HOME"], !envHome.isEmpty {
+            cleaned = cleaned.replacingOccurrences(of: envHome, with: "~")
+        }
+        // Match /Users/<username>
+        if let regex = try? NSRegularExpression(pattern: "/Users/[^/\\s\\)\\'\\\"`,:]+", options: []) {
+            let range = NSRange(location: 0, length: cleaned.utf16.count)
+            cleaned = regex.stringByReplacingMatches(in: cleaned, options: [], range: range, withTemplate: "~")
+        }
+        // Match /Volumes/<vol>/<username> dynamically without hardcoding names (allowing spaces in volume names)
+        if let volRegex = try? NSRegularExpression(pattern: "/Volumes/([^/\\)\\'\\\"`,:]+)/[^/\\s\\)\\'\\\"`,:]+", options: []) {
+            let range = NSRange(location: 0, length: cleaned.utf16.count)
+            cleaned = volRegex.stringByReplacingMatches(in: cleaned, options: [], range: range, withTemplate: "/Volumes/$1/~")
+        }
+        // Match /Volumes/<vol>/(?:Users|home)/<username>
+        if let volUsersRegex = try? NSRegularExpression(pattern: "/Volumes/([^/\\)\\'\\\"`,:]+)/(?:Users|home)/[^/\\s\\)\\'\\\"`,:]+", options: [.caseInsensitive]) {
+            let range = NSRange(location: 0, length: cleaned.utf16.count)
+            cleaned = volUsersRegex.stringByReplacingMatches(in: cleaned, options: [], range: range, withTemplate: "/Volumes/$1/~")
+        }
+        // Match /System/Volumes/Data/Users/<username>
+        if let sysVolRegex = try? NSRegularExpression(pattern: "/System/Volumes/Data/(?:Users|home)/[^/\\s\\)\\'\\\"`,:]+", options: [.caseInsensitive]) {
+            let range = NSRange(location: 0, length: cleaned.utf16.count)
+            cleaned = sysVolRegex.stringByReplacingMatches(in: cleaned, options: [], range: range, withTemplate: "~")
+        }
+        let username = NSUserName()
+        if username.count > 1 {
+            cleaned = cleaned.replacingOccurrences(of: username, with: "~user~", options: .caseInsensitive)
+        }
+        return cleaned
+    }
+
+    func getXcodeVersionInfo() -> String {
+        let pipe = Pipe()
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/xcodebuild")
+        proc.arguments = ["-version"]
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        try? proc.run()
+        proc.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !out.isEmpty {
+            return out.replacingOccurrences(of: "\n", with: ", ")
+        }
+        let cltPipe = Pipe()
+        let cltProc = Process()
+        cltProc.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        cltProc.arguments = ["-p"]
+        cltProc.standardOutput = cltPipe
+        cltProc.standardError = cltPipe
+        try? cltProc.run()
+        cltProc.waitUntilExit()
+        let cltPath = String(data: cltPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return cltPath.isEmpty ? "None detected" : "Command Line Tools (\(cltPath))"
+    }
+
+    func getMetalToolchainStatus() -> String {
+        var status: [String] = []
+        for tool in ["metal", "metal-tt", "air-tt"] {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+            proc.arguments = ["-f", tool]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = pipe
+            try? proc.run()
+            proc.waitUntilExit()
+            if proc.terminationStatus == 0 {
+                status.append("\(tool): OK")
+            } else {
+                status.append("\(tool): MISSING")
+            }
+        }
+        return status.joined(separator: ", ")
+    }
+
     func generateCrashReport(reason: String) -> String {
         let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
         let memGB = String(format: "%.1f GB", Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024))
@@ -1175,11 +1267,28 @@ class PortInstallerViewModel: ObservableObject {
             chipName = String(cString: machine)
         }
 
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let pythonCandidates = [
+            "\(Bundle.main.resourcePath ?? "")/python_env/bin/python",
+            "\(home)/Library/Application Support/MetalNX/python_env/bin/python",
+            "\(home)/Library/Application Support/MetalNX/python_env/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3",
+            "/usr/bin/python3"
+        ]
+        let pythonPath = sanitizeLogText(pythonCandidates.first(where: { FileManager.default.fileExists(atPath: $0) }) ?? "/usr/bin/python3")
+
         let dateStr = ISO8601DateFormatter().string(from: Date())
         let targetGame = verificationResult?.gameName ?? "Unknown Game"
         let titleId = verificationResult?.titleId ?? "Unknown ID"
         let version = verificationResult?.detectedVersion ?? "Unknown Version"
-        let recentLogs = consoleLogs.suffix(60).joined(separator: "\n")
+        let sanitizedReason = sanitizeLogText(reason)
+        let sanitizedLogs = consoleLogs.suffix(60).map { sanitizeLogText($0) }.joined(separator: "\n")
+        let sanitizedDest = sanitizeLogText(destinationPath)
+        let sanitizedFolder = sanitizeLogText(folderPath)
+        let xcodeInfo = getXcodeVersionInfo()
+        let metalInfo = getMetalToolchainStatus()
 
         return """
 ### MetalNX Port Diagnostic & Crash Report
@@ -1187,20 +1296,23 @@ class PortInstallerViewModel: ObservableObject {
 - **App Version**: MetalNX v\(kMetalNXVersion)
 - **OS**: macOS \(osVersion)
 - **Hardware**: \(chipName) (\(memGB) RAM)
+- **Xcode / CLT**: \(xcodeInfo)
+- **Metal Toolchain**: \(metalInfo)
+- **Bundled Python**: \(pythonPath)
 - **Game**: \(targetGame) (`\(titleId)`)
 - **Version**: \(version)
-- **Failing Stage**: \(currentStage)
-- **Failure Reason**: \(reason)
+- **Failing Stage**: \(currentStage.isEmpty ? "Stage 1/7: Initializing" : currentStage)
+- **Failure Reason**: \(sanitizedReason)
 
 #### Source Configuration:
 - Base NSP: \(baseNspPath.isEmpty ? "None" : (baseNspPath as NSString).lastPathComponent)
 - Update NSP: \(updateNspPath.isEmpty ? "None" : (updateNspPath as NSString).lastPathComponent)
-- Folder Source: \(folderPath.isEmpty ? "None" : folderPath)
-- Destination: \(destinationPath)
+- Folder Source: \(sanitizedFolder.isEmpty ? "None" : sanitizedFolder)
+- Destination: \(sanitizedDest)
 
-#### Recent Compilation Telemetry (Last \(min(consoleLogs.count, 60)) lines):
+#### Recent Compilation Telemetry (Last \(min(consoleLogs.count, 60)) lines, privacy sanitized):
 ```
-\(recentLogs.isEmpty ? "No telemetry recorded" : recentLogs)
+\(sanitizedLogs.isEmpty ? "No telemetry recorded" : sanitizedLogs)
 ```
 """
     }
@@ -1231,7 +1343,8 @@ class PortInstallerViewModel: ObservableObject {
         self.reportCopiedToast = true
 
         let targetGame = verificationResult?.gameName ?? "Game"
-        let title = "[Port Failure] \(targetGame) - \(currentStage): \(errorMsg.prefix(50))"
+        let sanitizedError = sanitizeLogText(errorMsg)
+        let title = "[Port Failure] \(targetGame) - \(currentStage): \(sanitizedError.prefix(50))"
         var queryParamAllowed = CharacterSet.alphanumerics
         queryParamAllowed.insert(charactersIn: "-._~")
         let titleEncoded = title.addingPercentEncoding(withAllowedCharacters: queryParamAllowed) ?? "Port Failure"
@@ -1239,13 +1352,13 @@ class PortInstallerViewModel: ObservableObject {
         // Keep URL safe across web browser URL length limits
         var body = report
         if body.count > 3000 {
-            let truncatedLogs = consoleLogs.suffix(20).joined(separator: "\n")
+            let truncatedLogs = consoleLogs.suffix(20).map { sanitizeLogText($0) }.joined(separator: "\n")
             body = """
 ### MetalNX Port Diagnostic & Crash Report
 - **App Version**: MetalNX v\(kMetalNXVersion)
 - **Game**: \(verificationResult?.gameName ?? "Unknown") (`\(verificationResult?.titleId ?? "")`)
 - **Failing Stage**: \(currentStage)
-- **Failure Reason**: \(errorMsg)
+- **Failure Reason**: \(sanitizedError)
 
 #### Recent Compilation Telemetry (Summary):
 ```

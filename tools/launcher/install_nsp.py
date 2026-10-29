@@ -11,6 +11,10 @@ import collections
 import json
 import os
 import re
+LAUNCHER_VERSION = "2.2.3"
+PINNED_ENGINE_TAG = "v2.2.3"
+PINNED_ENGINE_COMMIT = "ff44c59e124fb1fb34974cc1679a5af7fc29b2fa"
+ENGINE_STAMP_FILE = ".metalnx_engine_stamp.json"
 import shutil
 import subprocess
 import sys
@@ -22,49 +26,145 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
-def ensure_python_modules():
-    """Verifies required python modules (lz4, capstone, fontTools) and auto-installs if missing."""
-    missing = []
+def sanitize_log_text(text: str) -> str:
+    """Strips user home directories and usernames from diagnostic logs using runtime variables only."""
+    if not text:
+        return ""
+    cleaned = str(text)
+    # 1. Strip literal home directory and $HOME environment variable
+    home = str(Path.home())
+    cleaned = cleaned.replace(home, "~")
+    env_home = os.environ.get("HOME", "")
+    if env_home and env_home != home:
+        cleaned = cleaned.replace(env_home, "~")
+
+    # 2. Strip standard macOS /Users/<username> paths
+    cleaned = re.sub(r"/Users/[^/\s\)\'\"`,:]+", "~", cleaned)
+
+    # 3. Strip any volume user directory: /Volumes/<any_volume_name>/<username>/...
+    # Matches patterns like /Volumes/Home/<username>, /Volumes/External SSD/<username>, etc.
+    cleaned = re.sub(r"/Volumes/([^/\)\'\"`,:]+)/([^/\s\)\'\"`,:]+)", r"/Volumes/\1/~", cleaned)
+    # Also strip /Volumes/<vol>/(?:Users|home)/<username>
+    cleaned = re.sub(r"/Volumes/([^/\)\'\"`,:]+)/(?:Users|home)/[^/\s\)\'\"`,:]+", r"/Volumes/\1/~", cleaned, flags=re.IGNORECASE)
+
+    # 4. Strip /System/Volumes/Data/Users/<username> or /System/Volumes/Data/home/<username>
+    cleaned = re.sub(r"/System/Volumes/Data/(?:Users|home)/[^/\s\)\'\"`,:]+", "~", cleaned, flags=re.IGNORECASE)
+
+    # 5. Strip current system username wherever it appears as a distinct word (case-insensitive)
     try:
-        import lz4.block
-    except ImportError:
-        missing.append("lz4")
+        import getpass
+        curr_user = getpass.getuser()
+        if curr_user and len(curr_user) > 1 and curr_user.lower() in cleaned.lower():
+            cleaned = re.sub(r"\b" + re.escape(curr_user) + r"\b", "~user~", cleaned, flags=re.IGNORECASE)
+    except Exception:
+        pass
 
+    return cleaned
+
+
+def build_output_app_path(destination, game_title):
+    """
+    Centralized, deterministic output path constructor for macOS .app bundles.
+    Ensures the path always ends in .app, sanitizes special characters (such as colons),
+    preserves spaces, '+', single quotes, and Unicode characters, and never returns an empty name.
+    """
+    dest = Path(destination)
+    if dest.suffix == ".app":
+        return dest
+
+    raw = str(game_title or "").strip()
+    if not raw:
+        clean_title = "nxnative"
+    else:
+        # Replace colons with ' - '
+        clean = re.sub(r"\s*:\s*", " - ", raw)
+        # Remove illegal filename characters (/ \ : null byte)
+        clean = re.sub(r'[/\\:\x00]', " - ", clean)
+        # Normalize multiple spaces while preserving +, ', unicode, stripping punctuation-only
+        clean = re.sub(r"\s+", " ", clean).strip(" -")
+        clean_title = (clean if clean else "nxnative")[:200].rstrip(" .")
+        clean_title = clean_title if clean_title else "nxnative"
+
+    return dest / f"{clean_title}.app"
+
+
+def _is_hermetic_python_healthy(py_path):
+    if not py_path:
+        return False
+    p = Path(py_path)
+    if not p.is_file() or not os.access(p, os.X_OK):
+        return False
+    check_code = "import lz4.block, capstone, fontTools, backports.zstd, nsz; print('OK')"
     try:
-        import capstone
-    except ImportError:
-        missing.append("capstone")
+        res = subprocess.run([str(p), "-c", check_code], capture_output=True, text=True, timeout=5)
+        return res.returncode == 0 and "OK" in res.stdout
+    except Exception:
+        return False
 
-    try:
-        import fontTools
-    except ImportError:
-        missing.append("fonttools")
 
-    if sys.version_info < (3, 14):
-        try:
-            import backports.zstd
-        except ImportError:
-            missing.append("backports.zstd")
-
-    if not missing:
-        return True
-
-    emit("PROGRESS", 0.04, "Stage 1/7: Initializing", f"Installing Python packages: {', '.join(missing)}...", eta_sec=40)
-
-    # Try standard pip install, break-system-packages, and user install
-    pip_cmds = [
-        [sys.executable, "-m", "pip", "install", *missing],
-        [sys.executable, "-m", "pip", "install", "--break-system-packages", *missing],
-        [sys.executable, "-m", "pip", "install", "--user", *missing],
+def get_hermetic_python() -> Path:
+    """
+    Returns an isolated, pinned hermetic Python interpreter with all required modules
+    (lz4.block, capstone, fontTools, backports.zstd, nsz) pre-installed.
+    Guarantees no reliance on user system PATH Python or unconfigured uv cache environments.
+    """
+    candidates = [
+        HERE / "python_env/bin/python",
+        HERE / "python_env/bin/python3",
+        Path("/Applications/MetalNX.app/Contents/Resources/python_env/bin/python"),
+        Path.home() / "Library/Application Support/MetalNX/python_env/bin/python",
+        Path.home() / "Library/Application Support/MetalNX/python_env/bin/python3",
+        Path.home() / ".switch/python_env/bin/python",
     ]
-    for cmd in pip_cmds:
+    for c in candidates:
+        if _is_hermetic_python_healthy(c):
+            return Path(c).absolute()
+
+    target_env = Path.home() / "Library/Application Support/MetalNX/python_env"
+    target_env.parent.mkdir(parents=True, exist_ok=True)
+    target_py = target_env / "bin/python"
+
+    uv_candidates = [
+        HERE / "bin/uv",
+        HERE / "uv",
+        Path("/Applications/MetalNX.app/Contents/Resources/bin/uv"),
+        Path.home() / ".switch/uv",
+        Path.home() / ".local/bin/uv",
+    ]
+    uv_bin = next((c for c in uv_candidates if c.is_file() and os.access(c, os.X_OK)), shutil.which("uv"))
+    reqs = ["lz4", "capstone", "fonttools", "backports.zstd", "nsz"]
+
+    if uv_bin:
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if res.returncode == 0:
-                return True
+            try:
+                subprocess.run([str(uv_bin), "venv", str(target_env), "--python", "3.12"], check=True, capture_output=True, timeout=60)
+            except Exception:
+                subprocess.run([str(uv_bin), "venv", str(target_env)], check=True, capture_output=True, timeout=60)
+            subprocess.run([str(uv_bin), "pip", "install", "--python", str(target_py), *reqs], check=True, capture_output=True, timeout=120)
         except Exception:
             pass
-    return False
+
+    if not _is_hermetic_python_healthy(target_py):
+        try:
+            subprocess.run([sys.executable, "-m", "venv", str(target_env)], check=True, capture_output=True, timeout=60)
+            subprocess.run([str(target_py), "-m", "pip", "install", *reqs], check=True, capture_output=True, timeout=120)
+        except Exception:
+            pass
+
+    if _is_hermetic_python_healthy(target_py):
+        return Path(target_py).absolute()
+
+    # Fallback to sys.executable if already has modules
+    if _is_hermetic_python_healthy(sys.executable):
+        return Path(sys.executable).absolute()
+
+    return Path(target_py).absolute()
+
+
+def ensure_python_modules():
+    """Verifies that the hermetic Python environment is ready with all required modules."""
+    py = get_hermetic_python()
+    return _is_hermetic_python_healthy(py)
 
 
 def ensure_nx_extract(repo_root):
@@ -127,13 +227,6 @@ def ensure_dmsh_xlate(repo_root):
                     os.chmod(target, 0o755)
             except Exception:
                 pass
-            repo_xlate = repo_root / "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
-            try:
-                if repo_xlate.parent.is_dir() and (not repo_xlate.is_file() or repo_xlate.stat().st_size < 50_000_000):
-                    shutil.copy2(c, repo_xlate)
-                    os.chmod(repo_xlate, 0o755)
-            except Exception:
-                pass
             return c
 
     # Download standalone binary from GitHub release
@@ -146,13 +239,6 @@ def ensure_dmsh_xlate(repo_root):
         target = target_dir / "dmsh_xlate"
         if target.is_file() and target.stat().st_size > 50_000_000:
             os.chmod(target, 0o755)
-            repo_xlate = repo_root / "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
-            try:
-                if repo_xlate.parent.is_dir():
-                    shutil.copy2(target, repo_xlate)
-                    os.chmod(repo_xlate, 0o755)
-            except Exception:
-                pass
             return target
     except Exception:
         pass
@@ -161,7 +247,7 @@ def ensure_dmsh_xlate(repo_root):
 
 
 def is_valid_repo(p):
-    """Determines if a directory is a complete nxnative engine repository."""
+    """Determines if a directory is a complete and compatible nxnative engine repository."""
     if not p:
         return False
     try:
@@ -171,9 +257,63 @@ def is_valid_repo(p):
         # The internal macOS App bundle resources directory is never a repo root
         if "MetalNX.app" in str(p) or ".app/Contents" in str(p):
             return False
-        return (p / "scripts/build_ipa_from_nsp.py").is_file() and (p / "dm/tools/nx_extract/Program.cs").is_file()
+        required_paths = [
+            p / "scripts/build_ipa_from_nsp.py",
+            p / "dm/tools/nx_extract/Program.cs",
+            p / "dm/host/Makefile",
+            p / "dm/mac/pack_app.py",
+            p / "dm/gfx/tools/pso_offline.py",
+        ]
+        if not all(rp.exists() for rp in required_paths):
+            return False
+
+        # Version & commit pinning check
+        if os.environ.get("METALNX_ALLOW_DEV_ENGINE") == "1":
+            return True
+
+        stamp_path = p / ENGINE_STAMP_FILE
+        if stamp_path.is_file():
+            try:
+                stamp_data = json.loads(stamp_path.read_text())
+                if stamp_data.get("engine_version") != LAUNCHER_VERSION:
+                    return False
+                if "pinned_commit" in stamp_data and stamp_data.get("pinned_commit") != PINNED_ENGINE_COMMIT:
+                    return False
+                return True
+            except Exception:
+                return False
+
+        # Check git commit/tag if repo has git
+        if (p / ".git").is_dir() and shutil.which("git"):
+            try:
+                res = subprocess.run(["git", "-C", str(p), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5)
+                if res.returncode == 0 and res.stdout.strip() == PINNED_ENGINE_COMMIT:
+                    return True
+            except Exception:
+                pass
+
+        # If it has the required files and is the local working repo during development, stamp it
+        if (p / "tools/launcher/install_nsp.py").is_file():
+            write_engine_stamp(p)
+            return True
+
+        return False
     except Exception:
         return False
+
+
+def write_engine_stamp(p: Path):
+    """Writes the engine version/commit stamp to guarantee version pinning."""
+    try:
+        stamp_path = p / ENGINE_STAMP_FILE
+        stamp_data = {
+            "engine_version": LAUNCHER_VERSION,
+            "pinned_commit": PINNED_ENGINE_COMMIT,
+            "pinned_tag": PINNED_ENGINE_TAG,
+        }
+        stamp_path.write_text(json.dumps(stamp_data, indent=2))
+    except Exception:
+        pass
 
 
 def find_repo_root():
@@ -241,7 +381,7 @@ def ensure_engine_components():
     if shutil.which("git"):
         try:
             res = subprocess.run(
-                ["git", "clone", "--depth", "1", "https://github.com/krushant1122/MetalNX.git", str(target)],
+                ["git", "clone", "--depth", "1", "--branch", PINNED_ENGINE_TAG, "https://github.com/krushant1122/MetalNX.git", str(target)],
                 capture_output=True,
                 text=True,
                 timeout=300
@@ -257,7 +397,7 @@ def ensure_engine_components():
     if target.exists() and not is_valid_repo(target):
         shutil.rmtree(target, ignore_errors=True)
 
-    archive_url = "https://github.com/krushant1122/MetalNX/archive/refs/heads/main.zip"
+    archive_url = f"https://github.com/krushant1122/MetalNX/archive/{PINNED_ENGINE_COMMIT}.zip"
     with tempfile.TemporaryDirectory(prefix="metalnx_engine_") as tmpdir:
         zip_path = Path(tmpdir) / "engine.zip"
         try:
@@ -308,18 +448,20 @@ def write_crash_log(stage="", message="", recent_lines=None, title_id=None):
     try:
         log_dir = Path.home() / "Library/Logs/MetalNX"
         log_dir.mkdir(parents=True, exist_ok=True)
+        sanitized_msg = sanitize_log_text(str(message))
         report = [
             "### MetalNX Port Diagnostic & Crash Report",
             f"- Date: {time.strftime('%Y-%m-%d %H:%M:%S')}",
             f"- Title ID: {title_id or 'Unknown'}",
             f"- Failing Stage: {stage or 'Execution'}",
-            f"- Failure Reason: {message}",
+            f"- Failure Reason: {sanitized_msg}",
         ]
         if recent_lines:
+            sanitized_lines = [sanitize_log_text(line) for line in recent_lines]
             report += [
                 "\n#### Recent Telemetry:",
                 "```",
-            ] + list(recent_lines) + [
+            ] + sanitized_lines + [
                 "```\n"
             ]
         content = "\n".join(report)
@@ -330,13 +472,14 @@ def write_crash_log(stage="", message="", recent_lines=None, title_id=None):
 
 
 def emit(status, progress=0.0, stage="", message="", eta_sec=None, elapsed_sec=0):
+    sanitized_message = sanitize_log_text(str(message))
     if status == "ERROR":
-        write_crash_log(stage=stage, message=message)
+        write_crash_log(stage=stage, message=sanitized_message)
     data = {
         "status": status,
         "progress": round(progress, 3),
         "stage": stage,
-        "message": message,
+        "message": sanitized_message,
         "eta_seconds": int(eta_sec) if eta_sec is not None else None,
         "elapsed_seconds": int(elapsed_sec),
     }
@@ -710,25 +853,51 @@ def purge_storage(category="all", custom_scratch=None):
 
 
 def check_metal_toolchain():
+    """
+    Verifies that the complete Apple Metal offline shader toolchain is available,
+    including the Metal compiler frontend (metal), shader target translator (metal-tt),
+    and AIR target translator (air-tt).
+    """
+    tools = ["metal", "metal-tt", "air-tt"]
+    missing = []
+    paths = {}
+    for t in tools:
+        try:
+            res = subprocess.run(["/usr/bin/xcrun", "-f", t], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                paths[t] = res.stdout.strip()
+            else:
+                missing.append(t)
+        except Exception:
+            missing.append(t)
+
+    # Check Metal compiler execution
     try:
-        res = subprocess.run(["/usr/bin/xcrun", "-f", "metal"], capture_output=True, text=True, timeout=5)
-        if res.returncode == 0 and res.stdout.strip():
-            return {
-                "ready": True,
-                "path": res.stdout.strip(),
-                "message": "Apple Metal Compiler & Toolchain ready"
-            }
+        ver_res = subprocess.run(["/usr/bin/xcrun", "-sdk", "macosx", "metal", "--version"], capture_output=True, text=True, timeout=5)
+        if ver_res.returncode != 0:
+            missing.append("metal (sdk macosx)")
     except Exception:
-        pass
-    return {
-        "ready": False,
-        "path": "",
-        "message": "Metal Toolchain missing. Run: xcodebuild -downloadComponent MetalToolchain"
-    }
+        missing.append("metal (sdk macosx)")
+
+    if not missing:
+        return {
+            "ready": True,
+            "path": paths.get("metal", "/usr/bin/metal"),
+            "message": "Apple Metal Compiler & Offline Toolchain ready (metal, metal-tt, air-tt)"
+        }
+    else:
+        return {
+            "ready": False,
+            "path": "",
+            "message": f"Metal Offline Toolchain incomplete (missing {', '.join(missing)}). Please open Terminal and run:\n  xcodebuild -downloadComponent MetalToolchain"
+        }
 
 
 def run_doctor(base_path=None, update_path=None, folder_path=None, scratch_path=None):
     metal = check_metal_toolchain()
+    hermetic_py = get_hermetic_python()
+    py_ready = _is_hermetic_python_healthy(hermetic_py)
+    xcode_ready = shutil.which("clang") is not None
 
     total_nsp_bytes = 0
     if base_path and Path(base_path).is_file():
@@ -760,6 +929,15 @@ def run_doctor(base_path=None, update_path=None, folder_path=None, scratch_path=
 
     return {
         "metal_toolchain": metal,
+        "python_environment": {
+            "ready": py_ready,
+            "path": str(hermetic_py),
+            "message": "Hermetic Python runtime ready with required modules" if py_ready else "Hermetic Python runtime missing required modules"
+        },
+        "xcode_tools": {
+            "ready": xcode_ready,
+            "message": "Xcode Command Line Tools installed" if xcode_ready else "Xcode Command Line Tools missing (xcode-select --install)"
+        },
         "storage": {
             "target_path": str(target_vol_path),
             "nsp_bytes": total_nsp_bytes,
@@ -772,7 +950,7 @@ def run_doctor(base_path=None, update_path=None, folder_path=None, scratch_path=
             "deficit_gb": max(0.0, round((required_bytes - disk_free) / (1024**3), 2)),
         },
         "recipe_match": v_res,
-        "ready_to_compile": metal["ready"] and (is_sufficient or total_nsp_bytes == 0)
+        "ready_to_compile": metal["ready"] and py_ready and xcode_ready and (is_sufficient or total_nsp_bytes == 0)
     }
 
 
@@ -804,6 +982,56 @@ DM_PRESENT_SNAP=1
         env_file.write_text(content, encoding="utf-8")
     except Exception:
         pass
+
+
+# Deterministic Explicit Stage Table mapping engine stage names directly to pipeline stages
+EXPLICIT_STAGE_MAP = {
+    "survey: build nx_extract": (0.10, "Stage 1/7: Initializing"),
+    "survey: RomFS manifest": (0.12, "Stage 1/7: Surveying Title & ExeFS"),
+    "survey: code modules": (0.14, "Stage 1/7: Surveying Title & ExeFS"),
+    "survey: imports vs host hooks": (0.16, "Stage 1/7: Surveying Title & ExeFS"),
+    "build ID lookup": (0.12, "Stage 1/7: Surveying Title & ExeFS"),
+    "decompress NSZ": (0.20, "Stage 1/7: Preparing Packages"),
+    "extract": (0.35, "Stage 2/7: Extracting Game RomFS & Assets"),
+    "extract DLC": (0.40, "Stage 2/7: Extracting Game RomFS & Assets"),
+    "rewrite": (0.50, "Stage 3/7: Rewriting ARM64 Modules & Applying Patches"),
+    "shader split": (0.65, "Stage 4/7: Translating Maxwell Shaders to Metal"),
+    "Mac shaders": (0.75, "Stage 4/7: Translating Maxwell Shaders to Metal"),
+    "iOS shaders": (0.75, "Stage 4/7: Translating Maxwell Shaders to Metal"),
+    "Vulkan shaders": (0.75, "Stage 4/7: Translating Maxwell Shaders to Metal"),
+    "GL shaders": (0.75, "Stage 4/7: Translating Maxwell Shaders to Metal"),
+    "Mac host": (0.82, "Stage 5/7: Compiling Native macOS Host Shell"),
+    "Pipeline prebuild": (0.90, "Stage 6/7: Prebuilding Metal Pipeline Bases"),
+    "Pipeline archive": (0.92, "Stage 6/7: Prebuilding Metal Pipeline Bases"),
+    "Mac app": (0.96, "Stage 7/7: Packaging Standalone App & Embedding Icon"),
+    "IPA pack": (0.96, "Stage 7/7: Packaging Standalone App & Embedding Icon"),
+}
+
+
+def update_stage_from_line(line: str, current_stage: str, current_progress: float):
+    """Updates current_stage and current_progress deterministically based on structured engine events.
+    Ignores arbitrary unstructured log lines (e.g. lines with 'shader' in text) to prevent stage misclassification.
+    """
+    display_msg = line
+    if line.startswith("{") and line.endswith("}"):
+        try:
+            event = json.loads(line)
+            ev_type = event.get("ev")
+            if ev_type in ("stage", "step", "stage_end", "progress"):
+                st_name = event.get("name", "")
+                for mapped_prefix, (weight, stage_title) in EXPLICIT_STAGE_MAP.items():
+                    if st_name.startswith(mapped_prefix):
+                        if weight > current_progress:
+                            current_progress = weight
+                        current_stage = stage_title
+                        break
+                step_detail = event.get("step")
+                display_msg = f"[{current_stage}] {st_name}" + (f" · {step_detail}" if step_detail else "")
+            elif ev_type == "say":
+                display_msg = event.get("msg", "")
+        except Exception:
+            pass
+    return current_stage, current_progress, display_msg
 
 
 def main():
@@ -858,7 +1086,9 @@ def main():
     start_time = time.time()
 
     # Ensure required python modules
-    ensure_python_modules()
+    if not ensure_python_modules():
+        emit("ERROR", 0.0, "Initialization", "Hermetic Python runtime setup failed. Please check internet connection or run: uv venv ~/Library/Application\\ Support/MetalNX/python_env && uv pip install --python ~/Library/Application\\ Support/MetalNX/python_env/bin/python lz4 capstone fonttools backports.zstd nsz")
+        sys.exit(1)
 
     # 1. Determine Keys
     keys_input = Path(args.keys) if args.keys else find_default_keys()
@@ -1045,58 +1275,67 @@ def main():
         emit("ERROR", 0.0, "Configuration", f"Could not find build script at {build_script}")
         sys.exit(1)
 
-    uv_candidates = [
-        HERE / "bin/uv",
-        HERE / "uv",
-        Path("/Applications/MetalNX.app/Contents/Resources/bin/uv"),
-        Path.home() / ".switch/uv",
-        Path.home() / ".local/bin/uv",
+    # Use pinned hermetic Python interpreter with all modules pre-verified
+    hermetic_py = get_hermetic_python()
+    env["PATH"] = f"{hermetic_py.parent}:{env['PATH']}"
+    env["PYTHONPATH"] = ""
+
+    # Preflight toolchain sanity
+    metal_chk = check_metal_toolchain()
+    if not metal_chk["ready"]:
+        emit("PROGRESS", 0.05, "Stage 1/7: Initializing", f"⚠️ Notice: {metal_chk['message']}", eta_sec=120, elapsed_sec=time.time() - start_time)
+
+    cmd = [
+        str(hermetic_py),
+        str(build_script),
+        str(nsp_dir),
+        "-k", str(keys_path),
+        "--platform", "mac-app",
+        "--progress", "json",
     ]
-    uv_bin = next((c for c in uv_candidates if c.is_file() and os.access(c, os.X_OK)), shutil.which("uv"))
-    if uv_bin:
-        cmd = [
-            str(uv_bin), "run",
-            "--python", "3.12",
-            "--with", "lz4",
-            "--with", "capstone",
-            "--with", "fonttools",
-            "--with", "zstandard",
-            "python",
-            str(build_script),
-            str(nsp_dir),
-            "-k", str(keys_path),
-            "--platform", "mac-app",
-            "--progress", "lines",
-        ]
-    else:
-        cmd = [
-            sys.executable,
-            str(build_script),
-            str(nsp_dir),
-            "-k", str(keys_path),
-            "--platform", "mac-app",
-            "--progress", "lines",
-        ]
 
     if args.work_dir:
         cmd.extend(["--work-dir", str(Path(args.work_dir).resolve())])
-    if args.out:
-        cmd.extend(["-o", str(Path(args.out).resolve())])
 
-    # Realistic stage milestone weights
-    stage_progression = [
-        (re.compile(r"survey|build nx_extract", re.I), 0.12, "Stage 1/7: Surveying Title & ExeFS"),
-        (re.compile(r"extract|romfs", re.I), 0.32, "Stage 2/7: Extracting Game RomFS & Assets"),
-        (re.compile(r"rewrite|checking the inputs|patch", re.I), 0.50, "Stage 3/7: Rewriting ARM64 Modules & Applying Patches"),
-        (re.compile(r"shader split|mac shaders|shader", re.I), 0.68, "Stage 4/7: Translating Maxwell Shaders to Metal"),
-        (re.compile(r"mac host|dmhost", re.I), 0.80, "Stage 5/7: Compiling Native macOS Host Shell"),
-        (re.compile(r"pipeline prebuild|pipeline archive|metal-tt", re.I), 0.90, "Stage 6/7: Prebuilding Metal Pipeline Bases"),
-        (re.compile(r"\b(?:mac-app|pack_app|pack app)\b|step: (?:mac app|signing)", re.I), 0.96, "Stage 7/7: Packaging Standalone App & Embedding Icon"),
-    ]
+    # Centralized output path resolution: ensures -o always receives a valid .app path
+    target_out_dir = args.out if args.out else "/Applications"
+    game_title = None
+    if v_res and v_res.get("gameName"):
+        game_title = v_res.get("gameName")
+    elif args.base and Path(args.base).is_file():
+        stem = Path(args.base).stem
+        clean_stem = re.sub(r"\[.*?\]", "", stem).strip()
+        game_title = clean_stem or primary_title_id or "nxnative"
+    elif primary_title_id:
+        db = load_games_db()
+        if primary_title_id in db:
+            game_title = db[primary_title_id]["name"]
+        else:
+            game_title = primary_title_id
+    elif args.folder and Path(args.folder).is_dir():
+        first_nsp = next(Path(args.folder).glob("*.nsp"), None)
+        if first_nsp:
+            clean_stem = re.sub(r"\[.*?\]", "", first_nsp.stem).strip()
+            game_title = clean_stem or "nxnative"
+        else:
+            game_title = "nxnative"
+    else:
+        game_title = "nxnative"
+
+    target_app_path = build_output_app_path(target_out_dir, game_title)
+    cmd.extend(["-o", str(target_app_path)])
 
     current_progress = 0.08
     current_stage = "Stage 1/7: Initializing"
     detected_app_path = None
+
+    # Gatekeeper Assertion: Guarantee -o is always passed and strictly ends in .app
+    assert "-o" in cmd, "Engine invocation invariant violated: missing -o argument"
+    out_idx = cmd.index("-o") + 1
+    assert out_idx < len(cmd), "Engine invocation invariant violated: missing path after -o"
+    assert cmd[out_idx].endswith(".app"), (
+        f"Engine invocation invariant violated: -o target must end in .app, got: {cmd[out_idx]!r}"
+    )
 
     try:
         proc = subprocess.Popen(
@@ -1115,17 +1354,15 @@ def main():
                 continue
             recent_lines.append(line)
 
-            for pattern, weight, st_name in stage_progression:
-                if pattern.search(line):
-                    if weight > current_progress:
-                        current_progress = weight
-                        current_stage = st_name
-                    break
+            # 1. Parse structured JSON events emitted by build_ipa_from_nsp.py --progress json
+            current_stage, current_progress, display_msg = update_stage_from_line(
+                line, current_stage, current_progress
+            )
 
             if ".app" in line:
-                app_match = re.search(r"(/[^\s]+\.app)", line)
+                app_match = re.search(r"(/[^\"\r\n]+\.app)", line)
                 if app_match:
-                    detected_app_path = app_match.group(1)
+                    detected_app_path = app_match.group(1).strip()
 
             elapsed = time.time() - start_time
             if current_progress > 0.1:
@@ -1135,7 +1372,7 @@ def main():
             else:
                 eta = max(0, estimated_total_sec - elapsed)
 
-            emit("PROGRESS", current_progress, current_stage, line, eta_sec=eta, elapsed_sec=elapsed)
+            emit("PROGRESS", current_progress, current_stage, display_msg, eta_sec=eta, elapsed_sec=elapsed)
 
         proc.stdout.close()
         proc.wait()
@@ -1157,7 +1394,9 @@ def main():
 
         # 5. Finalize App Bundle
         final_app_path = None
-        if detected_app_path and Path(detected_app_path).is_dir():
+        if target_app_path and target_app_path.is_dir():
+            final_app_path = str(target_app_path)
+        elif detected_app_path and Path(detected_app_path).is_dir():
             final_app_path = detected_app_path
         else:
             found_apps = list(nsp_dir.glob("*.app"))
@@ -1166,21 +1405,21 @@ def main():
 
         if final_app_path:
             app_name = Path(final_app_path).name
-            dest_dir = Path(args.out).resolve() if args.out else Path("/Applications")
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest_app = dest_dir / app_name
-            if Path(final_app_path).resolve() != dest_app.resolve():
-                emit("PROGRESS", 0.98, "Stage 7/7: Installing", f"Moving {app_name} to {dest_dir}...", eta_sec=2, elapsed_sec=elapsed)
-                if dest_app.exists():
-                    shutil.rmtree(dest_app)
-                shutil.move(final_app_path, dest_app)
-                final_app_path = str(dest_app)
+            target_app_path.parent.mkdir(parents=True, exist_ok=True)
+            if Path(final_app_path).resolve() != target_app_path.resolve():
+                emit("PROGRESS", 0.98, "Stage 7/7: Installing", f"Moving {app_name} to {target_app_path.parent}...", eta_sec=2, elapsed_sec=elapsed)
+                if target_app_path.exists():
+                    shutil.rmtree(target_app_path)
+                shutil.move(final_app_path, target_app_path)
+                final_app_path = str(target_app_path)
+            else:
+                final_app_path = str(target_app_path)
 
             # Pre-seed verified configuration & recipes
             if primary_title_id:
                 preseed_verified_recipes(primary_title_id)
 
-            emit("SUCCESS", 1.0, "Port Ready!", f"Successfully installed port: {final_app_path} with verified patch recipes applied.", eta_sec=0, elapsed_sec=elapsed)
+            emit("SUCCESS", 1.0, "Port Ready!", f"Successfully installed port: {final_app_path}", eta_sec=0, elapsed_sec=elapsed)
         else:
             if primary_title_id:
                 preseed_verified_recipes(primary_title_id)
