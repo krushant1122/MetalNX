@@ -35,6 +35,16 @@ jobs:
           pip install ruff lz4 capstone fonttools nsz pillow
           pip install backports.zstd || true
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install Translation Chain Tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew install spirv-cross spirv-tools || true
+
       - name: Run Full MetalNX Test Suite
         run: |
           bash tools/launcher/tests/run_tests.sh

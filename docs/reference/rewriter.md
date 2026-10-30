@@ -46,6 +46,13 @@ To enroll a cut for any game's own module:
 - **Found on:** [DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition](../../dm/games/01006C300E9F0000/README.md) `main+0x2dd8cd0`.
 - **Note:** before fixing one site, a census of all of them saves a run per site: a copy of `patch_nso.py` whose assert prints and continues found this one alone among the 25,508 `x18` sites. That `main` has no unwind entries for its first 70 MB, so the rewriter disassembles them as one function and takes 6 minutes (see [Long functions analysed in pieces](#long-functions-analysed-in-pieces)).
 
+### 64-bit bounds check of the index
+
+- **Symptom:** `jump table <addr>` assertion in `patch_nso.py` on an offset table whose index is checked with a 64-bit compare (`cmp x22, #0x10; …; b.hi; adrp x18 + add x18; mov x0, x18; ldrsw x18, [x0, x22, lsl #2]; add x18, x18, x0; br x18`).
+- **Cause:** `jump_offsets` took only a 32-bit `cmp wI, #N` as the bounds check. A 64-bit compare bounds the index as well (the load uses the whole `xI`); here the table base also reaches the load through a copy, so only the far-base pass reads it.
+- **Fix:** in its last pass (`far_base`), `jump_offsets` accepts `cmp xI, #N` on the index too. The earlier passes are unchanged, so modules that rewrote before come out the same.
+- **Found on:** [OCTOPATH TRAVELER](../../dm/games/010057D006492000/README.md) `main+0x1676f58` (1.0.5), the only such site in that `main`.
+
 ### Index masked in the block that branches to the dispatch
 
 - **Symptom:** `jump table <addr>` assertion in a Unity / IL2CPP `main` whose dispatch checks a fresh mask of another register than the one it indexes with.
