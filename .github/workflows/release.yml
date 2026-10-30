@@ -60,9 +60,11 @@ jobs:
           echo "Testing built DMG: $DMG_FILE"
           test -f "$DMG_FILE" || (echo "DMG not found" && exit 1)
 
-          # Mount disk image
-          MOUNT_DIR="/Volumes/MetalNX_Smoke"
-          hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+          # Mount disk image and parse mountpoint
+          MOUNT_LINE=$(hdiutil attach "$DMG_FILE" -nobrowse | grep "/Volumes/")
+          MOUNT_DIR=$(echo "$MOUNT_LINE" | awk -F'\t' '{print $NF}' | xargs)
+          echo "Mounted DMG at: $MOUNT_DIR"
+          test -n "$MOUNT_DIR" && test -d "$MOUNT_DIR"
 
           # Verify bundle structure
           APP_DIR="$MOUNT_DIR/MetalNX.app"
