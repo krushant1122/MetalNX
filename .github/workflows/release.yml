@@ -56,19 +56,34 @@ jobs:
 
       - name: DMG Smoke & Quarantine Verification Test
         run: |
-          DMG_FILE=$(ls build/launcher/MetalNX-*.dmg | head -n 1)
+          DMG_FILE=$(ls -t build/launcher/MetalNX-*.dmg | head -n 1)
           echo "Testing built DMG: $DMG_FILE"
           test -f "$DMG_FILE" || (echo "DMG not found" && exit 1)
 
-          # Mount disk image and parse mountpoint
-          MOUNT_LINE=$(hdiutil attach "$DMG_FILE" -nobrowse | grep "/Volumes/")
-          MOUNT_DIR=$(echo "$MOUNT_LINE" | awk -F'\t' '{print $NF}' | xargs)
-          echo "Mounted DMG at: $MOUNT_DIR"
-          test -n "$MOUNT_DIR" && test -d "$MOUNT_DIR"
+          MOUNT_DIR="/tmp/metalnx_dmg_mount"
+          rm -rf "$MOUNT_DIR"
+          mkdir -p "$MOUNT_DIR"
+          hdiutil attach "$DMG_FILE" -mountpoint "$MOUNT_DIR" -nobrowse -quiet
+
+          echo "Mounted DMG contents:"
+          ls -la "$MOUNT_DIR"
+
+          test -d "$MOUNT_DIR/MetalNX.app"
+          test -L "$MOUNT_DIR/Applications"
+
+          # Simulate user dragging app out of DMG to local disk
+          SMOKE_DIR="/tmp/metalnx_smoke"
+          rm -rf "$SMOKE_DIR"
+          mkdir -p "$SMOKE_DIR"
+          cp -R "$MOUNT_DIR/MetalNX.app" "$SMOKE_DIR/"
+
+          # Detach mounted image
+          hdiutil detach "$MOUNT_DIR" -quiet
+          rm -rf "$MOUNT_DIR"
+
+          APP_DIR="$SMOKE_DIR/MetalNX.app"
 
           # Verify bundle structure
-          APP_DIR="$MOUNT_DIR/MetalNX.app"
-          test -d "$APP_DIR"
           test -f "$APP_DIR/Contents/MacOS/MetalNX"
           test -f "$APP_DIR/Contents/Resources/install_nsp.py"
           test -f "$APP_DIR/Contents/Resources/games_db.json"
@@ -82,8 +97,7 @@ jobs:
           # Verify python and scripts execute under quarantine
           /usr/bin/python3 "$APP_DIR/Contents/Resources/install_nsp.py" --help > /dev/null
 
-          # Unmount
-          hdiutil detach "$MOUNT_DIR" -quiet
+          rm -rf "$SMOKE_DIR"
           echo "✓ DMG Smoke & Quarantine test passed successfully"
 
       - name: Create GitHub Release and Upload Assets
@@ -98,5 +112,7 @@ jobs:
 
           gh release create "$TAG" \
             build/launcher/MetalNX-*.dmg \
-            --title "MetalNX $TAG" \
-            --generate-notes
+            --title "MetalNX $TAG (Pre-release)" \
+            --prerelease \
+            --generate-notes || \
+          gh release upload "$TAG" build/launcher/MetalNX-*.dmg --clobber
