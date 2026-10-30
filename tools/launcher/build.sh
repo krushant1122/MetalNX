@@ -115,33 +115,22 @@ elif [ -d "$HOME/Library/Application Support/MetalNX/python_env" ]; then
 fi
 
 # Clean any broken or out-of-bundle symlinks inside the app bundle
-# Codesign --deep rejects any symbolic link pointing outside the bundle hierarchy
+# Codesign --deep rejects any broken symbolic link or link pointing outside the bundle hierarchy
 find "$APP_BUNDLE" -type l | while read -r link; do
-    target=$(readlink "$link")
-    case "$target" in
-        /*)
-            # Absolute symlink pointing outside bundle
-            case "$target" in
-                "$APP_BUNDLE"*) ;; # Internal absolute link is fine
-                *)
-                    # Resolve to actual file or remove to prevent codesign failure
-                    if [ -e "$target" ]; then
-                        rm "$link"
-                        cp -R "$target" "$link"
-                    else
-                        rm -f "$link"
-                    fi
-                    ;;
-            esac
-            ;;
-        *)
-            # Relative link: verify target exists within bundle
-            link_dir=$(dirname "$link")
-            if [ ! -e "$link_dir/$target" ]; then
+    if [ ! -e "$link" ]; then
+        echo "Removing broken symlink: $link -> $(readlink "$link")"
+        rm -f "$link"
+    else
+        target=$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$link")
+        case "$target" in
+            "$APP_BUNDLE"*) ;; # Internal target is fine
+            *)
+                echo "Dereferencing external symlink: $link -> $target"
                 rm -f "$link"
-            fi
-            ;;
-    esac
+                cp -L -R "$target" "$link"
+                ;;
+        esac
+    fi
 done
 
 # Copy Info.plist
