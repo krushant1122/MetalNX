@@ -110,45 +110,8 @@ elif [ -d "$HOME/Library/Application Support/MetalNX/python_env" ]; then
     cp -R "$HOME/Library/Application Support/MetalNX/python_env" "$APP_BUNDLE/Contents/Resources/python_env"
 fi
 
-# Write Info.plist
-cat << EOF > "$APP_BUNDLE/Contents/Info.plist"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundleDisplayName</key>
-    <string>MetalNX</string>
-    <key>CFBundleExecutable</key>
-    <string>MetalNX</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleIconName</key>
-    <string>AppIcon</string>
-    <key>CFBundleIdentifier</key>
-    <string>org.nxnative.metalnx</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>MetalNX</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>$VERSION</string>
-    <key>CFBundleVersion</key>
-    <string>$VERSION</string>
-    <key>LSApplicationCategoryType</key>
-    <string>public.app-category.utilities</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
-</dict>
-</plist>
-EOF
+# Copy Info.plist
+cp "$DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
 echo "-> Code signing all nested executables, dylibs, and .so files (ad-hoc)..."
 find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" \) -exec codesign --force --sign - {} +

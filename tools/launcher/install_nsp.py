@@ -10,6 +10,7 @@ import argparse
 import collections
 import json
 import os
+import platform
 import re
 LAUNCHER_VERSION = "2.2.3"
 PINNED_ENGINE_TAG = "v2.2.3"
@@ -236,10 +237,73 @@ sys.exit(0)
     return None
 
 
+def find_dotnet_root():
+    """Locate .NET 10 runtime/SDK installation root directory."""
+    candidates = [
+        os.environ.get("DOTNET_ROOT"),
+        os.environ.get("DOTNET_ROOT_ARM64"),
+        str(Path.home() / ".dotnet"),
+        "/usr/local/share/dotnet",
+        "/opt/homebrew/share/dotnet",
+        "/opt/homebrew/opt/dotnet/libexec",
+    ]
+    which_dotnet = shutil.which("dotnet")
+    if which_dotnet:
+        p = Path(which_dotnet).resolve()
+        candidates.extend([str(p.parent), str(p.parent.parent)])
+
+    for c in candidates:
+        if c and Path(c).is_dir() and (Path(c) / "dotnet").is_file():
+            return Path(c).resolve()
+    return None
+
+
+def discover_dotnet():
+    """Ensure DOTNET_ROOT and PATH are configured in the current process and child environments."""
+    root = find_dotnet_root()
+    if root:
+        os.environ["DOTNET_ROOT"] = str(root)
+        os.environ["DOTNET_ROOT_ARM64"] = str(root)
+        cur_path = os.environ.get("PATH", "")
+        if str(root) not in cur_path.split(":"):
+            os.environ["PATH"] = f"{root}:{cur_path}"
+        return root
+    return None
+
+
+def check_translation_toolchain(repo_root):
+    """Verifies in-repo translation tools against dmsh_chain.lock before Stage 1 begins.
+    Returns (ok: bool, issues: list[str])."""
+    chain_script = repo_root / "dm/gfx/tools/dmsh_chain.py"
+    if not chain_script.is_file():
+        return False, [f"Missing chain script at {chain_script}"]
+
+    discover_dotnet()
+    py_bin = get_hermetic_python()
+    env = os.environ.copy()
+
+    proc = subprocess.run(
+        [str(py_bin), str(chain_script), "--check-tools"],
+        capture_output=True,
+        text=True,
+        cwd=str(repo_root),
+        env=env,
+    )
+    if proc.returncode != 0:
+        bad = [line.strip() for line in proc.stdout.splitlines() if "[RED]" in line or "lock" in line or "mismatch" in line]
+        if not bad:
+            bad = [proc.stderr.strip() or proc.stdout.strip() or "Translation toolchain verification failed"]
+        return False, bad
+    return True, []
+
+
 def ensure_dmsh_xlate(repo_root):
-    """Ensures standalone dmsh_xlate binary (>50MB) is available in ~/.switch/dmsh_xlate
-    and in repo_root / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate' so Stage 4 shader translation
-    runs without requiring .NET 10 SDK or runtime."""
+    """Ensures in-repo dmsh_xlate is executable and discovers .NET 10 runtime."""
+    discover_dotnet()
+    in_repo = repo_root / "dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate"
+    if in_repo.is_file() and os.access(in_repo, os.X_OK):
+        return in_repo
+
     candidates = [
         HERE / "bin/dmsh_xlate",
         HERE / "dmsh_xlate",
@@ -248,34 +312,11 @@ def ensure_dmsh_xlate(repo_root):
         repo_root / "tools/bin/dmsh_xlate",
         Path.home() / ".switch/dmsh_xlate",
     ]
-    # Check for self-contained binary (> 50MB) and overwrite stale framework-dependent ones
     for c in candidates:
-        if c.is_file() and os.access(c, os.X_OK) and c.stat().st_size > 50_000_000:
-            target = Path.home() / ".switch/dmsh_xlate"
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if not target.is_file() or target.stat().st_size < 50_000_000:
-                    shutil.copy2(c, target)
-                    os.chmod(target, 0o755)
-            except Exception:
-                pass
+        if c.is_file() and os.access(c, os.X_OK):
             return c
 
-    # Download standalone binary from GitHub release
-    emit("PROGRESS", 0.08, "Stage 1/7: Initializing", "Downloading standalone shader translator binary...", eta_sec=30)
-    target_dir = Path.home() / ".switch"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        url = "https://github.com/krushant1122/MetalNX/releases/download/v2.0.9/dmsh_xlate-osx-arm64.tar.gz"
-        subprocess.run(f'curl -sSL -f "{url}" | tar -xz -C "{target_dir}"', shell=True, check=True, timeout=120)
-        target = target_dir / "dmsh_xlate"
-        if target.is_file() and target.stat().st_size > 50_000_000:
-            os.chmod(target, 0o755)
-            return target
-    except Exception:
-        pass
-
-    return None
+    return in_repo if in_repo.is_file() else None
 
 
 def is_valid_repo(p):
@@ -621,36 +662,153 @@ def extract_title_and_version(file_path):
     return raw_tid, base_tid, is_update, ver
 
 
-def verify_file(file_path):
-    raw_tid, base_tid, is_update, ver = extract_title_and_version(file_path)
-    games_map = load_games_db()
+def normalize_version(v):
+    if not v:
+        return "0"
+    s = str(v).strip().strip("[]").strip()
+    if s.lower().startswith("v"):
+        s = s[1:].strip()
+    return s if s else "0"
 
-    if not base_tid or base_tid not in games_map:
+
+def is_version_match(detected, supported_versions, tested_display_ver):
+    """Strict equality and token matching (prevents '0' in '1.9.0' false positives)."""
+    det = normalize_version(detected)
+    if not det:
+        return False
+
+    candidates = [normalize_version(tested_display_ver)]
+    for sv in supported_versions or []:
+        if isinstance(sv, dict):
+            if "displayVersion" in sv:
+                candidates.append(normalize_version(sv["displayVersion"]))
+            if "versionCode" in sv:
+                candidates.append(normalize_version(sv["versionCode"]))
+        elif isinstance(sv, str):
+            candidates.append(normalize_version(sv))
+
+    # 1. Exact string match
+    for c in candidates:
+        if det.lower() == c.lower():
+            return True
+
+    # 2. Dot-separated numeric component match (e.g. "1.6.0" matches "1.6.0")
+    # Never match "0" to multi-component version like "1.9.0"
+    try:
+        det_parts = [int(p) for p in det.split(".") if p.isdigit()]
+        if len(det_parts) > 1:
+            for c in candidates:
+                c_parts = [int(p) for p in c.split(".") if p.isdigit()]
+                if len(c_parts) == len(det_parts) and det_parts == c_parts:
+                    return True
+    except Exception:
+        pass
+
+    return False
+
+
+def verify_package_combo(files_or_dir, games_map=None):
+    """Verifies a combination of game packages (base, updates, DLC) or directory against games_db.json."""
+    if games_map is None:
+        games_map = load_games_db()
+
+    file_paths = []
+    if isinstance(files_or_dir, (str, Path)):
+        p = Path(files_or_dir)
+        if p.is_dir():
+            for ext in ["*.nsp", "*.nsz", "*.xci", "*.xcz"]:
+                file_paths.extend(list(p.glob(ext)))
+        else:
+            file_paths = [p]
+    elif isinstance(files_or_dir, (list, tuple)):
+        for f in files_or_dir:
+            if f:
+                fp = Path(f)
+                if fp.is_dir():
+                    for ext in ["*.nsp", "*.nsz", "*.xci", "*.xcz"]:
+                        file_paths.extend(list(fp.glob(ext)))
+                else:
+                    file_paths.append(fp)
+
+    if not file_paths:
         return {
             "status": "UNTESTED_GAME",
-            "titleId": base_tid or raw_tid or "UNKNOWN",
+            "titleId": "UNKNOWN",
+            "gameName": "No Switch Packages Found",
+            "detectedVersion": "0",
+            "testedVersion": "None",
+            "isSupported": False,
+            "badge": "ℹ️ No Packages",
+            "message": "No valid NSP, NSZ, or XCI files were found in the selected path.",
+            "unsupportedNote": "Please provide an NSP or XCI file to proceed.",
+            "packages": [],
+        }
+
+    # Inspect all files and group by base title ID
+    packages = []
+    for fp in file_paths:
+        raw_tid, base_tid, is_upd, ver = extract_title_and_version(fp)
+        packages.append({
+            "path": str(fp),
+            "filename": Path(fp).name,
+            "raw_tid": raw_tid,
+            "base_tid": base_tid,
+            "is_update": is_upd,
+            "version": ver,
+        })
+
+    # Find primary base title ID
+    primary_base_tid = None
+    for pkg in packages:
+        if pkg["base_tid"] and pkg["base_tid"] in games_map:
+            primary_base_tid = pkg["base_tid"]
+            break
+    if not primary_base_tid:
+        for pkg in packages:
+            if pkg["base_tid"]:
+                primary_base_tid = pkg["base_tid"]
+                break
+
+    if not primary_base_tid or primary_base_tid not in games_map:
+        tid_disp = primary_base_tid or "UNKNOWN"
+        return {
+            "status": "UNTESTED_GAME",
+            "titleId": tid_disp,
             "gameName": "Untested Game Title",
-            "detectedVersion": ver,
+            "detectedVersion": packages[0]["version"] if packages else "0",
             "testedVersion": "None",
             "isSupported": False,
             "badge": "ℹ️ Untested Game",
-            "message": f"Title ID {base_tid or raw_tid or 'Unknown'} is not in the nxnative tested database. Porting will attempt an automated survey and best-effort build, but installation may or may not succeed.",
-            "unsupportedNote": "This title has not been tested by the nxnative community. Graphics and stability are unverified."
+            "message": f"Title ID {tid_disp} is not in the nxnative tested database. Porting will attempt an automated survey and best-effort build, but installation may or may not succeed.",
+            "unsupportedNote": "This title has not been tested by the nxnative community. Graphics and stability are unverified.",
+            "packages": packages,
         }
 
-    g = games_map[base_tid]
-    is_version_match = False
-    for sv in g.get("supportedVersions", []):
-        if ver in sv.get("versionCode", "") or ver in sv.get("displayVersion", "") or sv.get("displayVersion", "") in ver:
-            is_version_match = True
-            break
+    g = games_map[primary_base_tid]
+    # Check what packages exist for this game
+    game_pkgs = [p for p in packages if p["base_tid"] == primary_base_tid]
+    update_pkgs = [p for p in game_pkgs if p["is_update"] or (p["raw_tid"] and p["raw_tid"].endswith("800"))]
+    base_pkgs = [p for p in game_pkgs if not p["is_update"] and not (p["raw_tid"] and p["raw_tid"].endswith("800"))]
 
-    if is_version_match or ver in g.get("testedDisplayVersion", "") or g.get("testedDisplayVersion", "") in ver:
+    has_update = len(update_pkgs) > 0
+    has_base = len(base_pkgs) > 0 or any(Path(p["path"]).suffix.lower() in (".xci", ".xcz") for p in game_pkgs)
+
+    # Determine effective version
+    if has_update:
+        effective_ver = update_pkgs[0]["version"]
+    elif base_pkgs:
+        effective_ver = base_pkgs[0]["version"]
+    else:
+        effective_ver = game_pkgs[0]["version"]
+
+    is_match = is_version_match(effective_ver, g.get("supportedVersions", []), g.get("testedDisplayVersion", "1.0.0"))
+
+    if is_match:
         return {
             "status": "VERIFIED_SUPPORTED",
-            "titleId": base_tid,
+            "titleId": primary_base_tid,
             "gameName": g["name"],
-            "detectedVersion": ver,
+            "detectedVersion": effective_ver,
             "testedVersion": g.get("testedDisplayVersion", "1.0.0"),
             "isSupported": True,
             "badge": "✓ Verified Compatible Release",
@@ -658,23 +816,109 @@ def verify_file(file_path):
             "unsupportedNote": g.get("unsupportedVersionsNote", ""),
             "hasPatches": g.get("hasCustomPatches", False),
             "testedFps": g.get("testedFps", 60),
-            "recipes": g.get("recipes", [])
+            "recipes": g.get("recipes", []),
+            "hasUpdate": has_update,
+            "hasBase": has_base,
+            "packages": packages,
         }
-    else:
+
+    # If no match: check if base-only when an update is required
+    base_is_supported = is_version_match("0", g.get("supportedVersions", []), g.get("testedDisplayVersion", "1.0.0")) or \
+                        is_version_match("1.0.0", g.get("supportedVersions", []), g.get("testedDisplayVersion", "1.0.0"))
+
+    if not has_update and not base_is_supported:
         return {
-            "status": "UNTESTED_VERSION",
-            "titleId": base_tid,
+            "status": "UNTESTED_BASE_ONLY",
+            "titleId": primary_base_tid,
             "gameName": g["name"],
-            "detectedVersion": ver,
+            "detectedVersion": effective_ver,
             "testedVersion": g.get("testedDisplayVersion", "1.0.0"),
             "isSupported": False,
-            "badge": "⚠️ Untested Update Version",
-            "message": f"⚠️ Detected version '{ver}' for {g['name']} is unverified. The officially tested and benchmarked update is '{g['testedDisplayVersion']}'.",
-            "unsupportedNote": g.get("unsupportedVersionsNote", "Older or unlisted game versions lack registered shader pairs and 60 FPS patches. For guaranteed stability, use the tested update."),
+            "badge": "⚠️ Update Required (Base Only)",
+            "message": f"{g['name']} base (v{effective_ver}) selected. This game requires Update v{g['testedDisplayVersion']} to run on MetalNX. Please select the update NSP/XCI alongside the base game.",
+            "unsupportedNote": g.get("unsupportedVersionsNote", "Base game lacks registered shader pairs and stability patches."),
             "hasPatches": g.get("hasCustomPatches", False),
             "testedFps": g.get("testedFps", 60),
-            "recipes": g.get("recipes", [])
+            "recipes": g.get("recipes", []),
+            "hasUpdate": False,
+            "hasBase": has_base,
+            "packages": packages,
         }
+
+    return {
+        "status": "UNTESTED_VERSION",
+        "titleId": primary_base_tid,
+        "gameName": g["name"],
+        "detectedVersion": effective_ver,
+        "testedVersion": g.get("testedDisplayVersion", "1.0.0"),
+        "isSupported": False,
+        "badge": "⚠️ Untested Game Version",
+        "message": f"⚠️ Detected version '{effective_ver}' for {g['name']} is unverified. The officially tested update is '{g['testedDisplayVersion']}'.",
+        "unsupportedNote": g.get("unsupportedVersionsNote", "Older or unlisted game versions lack registered shader pairs and 60 FPS patches. For guaranteed stability, use the tested update."),
+        "hasPatches": g.get("hasCustomPatches", False),
+        "testedFps": g.get("testedFps", 60),
+        "recipes": g.get("recipes", []),
+        "hasUpdate": has_update,
+        "hasBase": has_base,
+        "packages": packages,
+    }
+
+
+def verify_file(file_path):
+    return verify_package_combo(file_path)
+
+
+def check_os_environment(cache_path, dest_path):
+    """Preflight checks for macOS minimum version, Unified Memory (RAM), and dual-volume disk space."""
+    issues = []
+    warnings = []
+
+    # 1. macOS version check (Sonoma 14.0+ required, Sequoia 15.0+ recommended)
+    mac_ver = platform.mac_ver()[0]
+    if mac_ver:
+        try:
+            major = int(mac_ver.split(".")[0])
+            if major < 14:
+                issues.append(f"macOS 14.0 (Sonoma) or newer is required. Detected macOS {mac_ver}. Please update macOS.")
+            elif major == 14:
+                warnings.append("macOS 14.x detected. macOS 15.0+ (Sequoia) is recommended for optimal Metal shader compiler performance.")
+        except Exception:
+            pass
+
+    # 2. RAM check (< 16 GB warning)
+    try:
+        mem_bytes = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip())
+        mem_gb = mem_bytes / (1024 ** 3)
+        if mem_gb < 15.5:
+            warnings.append(f"System has {mem_gb:.1f} GB Unified Memory (< 16 GB). Heavy swap usage may occur during Metal shader compilation.")
+    except Exception:
+        pass
+
+    # 3. Dual-volume disk space check
+    try:
+        c_path = Path(cache_path).resolve()
+        d_path = Path(dest_path).resolve()
+        c_path.mkdir(parents=True, exist_ok=True)
+        d_path.mkdir(parents=True, exist_ok=True)
+
+        c_dev = c_path.stat().st_dev
+        d_dev = d_path.stat().st_dev
+        c_free_gb = shutil.disk_usage(c_path).free / (1024 ** 3)
+        d_free_gb = shutil.disk_usage(d_path).free / (1024 ** 3)
+
+        min_required_gb = 25.0
+        if c_dev == d_dev:
+            if c_free_gb < 35.0:
+                issues.append(f"Insufficient disk space on build volume ({c_free_gb:.1f} GB available). At least 35.0 GB free space required.")
+        else:
+            if c_free_gb < min_required_gb:
+                issues.append(f"Insufficient disk space on build cache volume ({c_free_gb:.1f} GB available). At least {min_required_gb:.1f} GB required.")
+            if d_free_gb < min_required_gb:
+                issues.append(f"Insufficient disk space on destination volume ({d_free_gb:.1f} GB available). At least {min_required_gb:.1f} GB required.")
+    except Exception:
+        pass
+
+    return issues, warnings
 
 
 PROTECTED_SYSTEM_PATHS = {
@@ -976,9 +1220,10 @@ def run_doctor(base_path=None, update_path=None, folder_path=None, scratch_path=
     _, _, disk_free = shutil.disk_usage(str(target_vol_path))
     is_sufficient = disk_free >= required_bytes
 
-    check_target = update_path or base_path
-    if check_target and Path(check_target).is_file():
-        v_res = verify_file(check_target)
+    if folder_path and Path(folder_path).is_dir():
+        v_res = verify_package_combo(folder_path)
+    elif update_path or base_path:
+        v_res = verify_package_combo([base_path, update_path])
     else:
         v_res = None
 
@@ -1101,6 +1346,7 @@ def main():
     parser.add_argument("--purge-category", default="all", choices=["all", "build_cache", "engine_workspace", "toolchain", "logs"], help="Category of storage to purge")
     parser.add_argument("--storage-info", action="store_true", help="Print detailed storage usage breakdown in JSON")
     parser.add_argument("--doctor", action="store_true", help="Run pre-flight toolchain doctor and disk space check")
+    parser.add_argument("--allow-untested-base", action="store_true", help="Allow porting untested base game without required update (experimental)")
     parser.add_argument("--verify", help="Inspect and verify an NSP/NSZ file for compatibility")
     parser.add_argument("--list-db", action="store_true", help="Print all verified games in JSON")
     args = parser.parse_args()
@@ -1211,16 +1457,18 @@ def main():
         emit("ERROR", 0.0, "Initialization", "No valid base NSP or folder provided.")
         sys.exit(1)
 
-    # Compatibility check notice
-    if args.update:
-        v_res = verify_file(args.update)
-    elif args.base:
-        v_res = verify_file(args.base)
-    else:
-        v_res = None
+    # Compatibility and package combination check
+    v_res = verify_package_combo(args.folder or [args.base, args.update])
+
+    if v_res and v_res.get("status") == "UNTESTED_BASE_ONLY" and not args.allow_untested_base:
+        emit("ERROR", 0.0, "Preflight: Package Support",
+             f"{v_res['message']}\n\nTo attempt porting this base game without updates at your own risk, enable 'Allow experimental base-only port' or pass --allow-untested-base.")
+        sys.exit(1)
 
     if v_res and v_res.get("status") == "VERIFIED_SUPPORTED":
         emit("PROGRESS", 0.06, "Stage 1/7: Verified Release", f"✓ {v_res['badge']}: {v_res['gameName']} ({v_res['testedVersion']})", eta_sec=120, elapsed_sec=0)
+    elif v_res and v_res.get("status") == "UNTESTED_BASE_ONLY":
+        emit("PROGRESS", 0.06, "Stage 1/7: Untested Base", "⚠️ Notice: Proceeding with untested base game without required update (--allow-untested-base).", eta_sec=120, elapsed_sec=0)
     elif v_res and v_res.get("status") == "UNTESTED_VERSION":
         emit("PROGRESS", 0.06, "Stage 1/7: Untested Version", f"{v_res['badge']}: {v_res['unsupportedNote']}", eta_sec=120, elapsed_sec=0)
     elif v_res and v_res.get("status") == "UNTESTED_GAME":
@@ -1254,11 +1502,12 @@ def main():
     env["PATH"] = ":".join(current_paths)
     os.environ["PATH"] = env["PATH"]
 
-    # Purge any partial/broken external DOTNET_ROOT variables to enforce standalone binary
-    env.pop("DOTNET_ROOT", None)
-    env.pop("DOTNET_ROOT_ARM64", None)
-    os.environ.pop("DOTNET_ROOT", None)
-    os.environ.pop("DOTNET_ROOT_ARM64", None)
+    # Discover .NET 10 runtime root and export to environment
+    dotnet_root = discover_dotnet()
+    if dotnet_root:
+        env["DOTNET_ROOT"] = str(dotnet_root)
+        env["DOTNET_ROOT_ARM64"] = str(dotnet_root)
+        env["PATH"] = f"{dotnet_root}:{env['PATH']}"
 
     # Check clang / Xcode Command Line Tools
     if not shutil.which("clang"):
@@ -1269,6 +1518,24 @@ def main():
     if not repo_root:
         emit("ERROR", 0.0, "Configuration", "Could not locate or download MetalNX engine. Please clone https://github.com/krushant1122/MetalNX to ~/nxnative or set NXNATIVE_ROOT.")
         sys.exit(1)
+
+    # Stage 0: Toolchain Lock & Preflight Verification
+    emit("PROGRESS", 0.02, "Stage 0/7: Preflight Check", "Verifying translation toolchain against lock file...", eta_sec=120)
+    tools_ok, tool_issues = check_translation_toolchain(repo_root)
+    if not tools_ok:
+        emit("ERROR", 0.0, "Preflight: Toolchain Lock",
+             "Translation chain tools do not match lock file:\n" + "\n".join(tool_issues) +
+             "\n\nFix: Ensure .NET 10 is installed and reachable:\n  brew install dotnet\n  or curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0")
+        sys.exit(1)
+
+    target_out_dir = args.out if args.out else "/Applications"
+    scratch_dir_target = resolve_safe_scratch(args.work_dir)
+    env_issues, env_warnings = check_os_environment(scratch_dir_target, target_out_dir)
+    if env_issues:
+        emit("ERROR", 0.0, "Preflight: Environment", "\n".join(env_issues))
+        sys.exit(1)
+    for w in env_warnings:
+        emit("PROGRESS", 0.03, "Stage 0/7: Preflight Check", f"⚠️ Notice: {w}", eta_sec=120)
 
     # Set authoritative environment variables so all sub-processes know the engine root
     env["NXNATIVE_ROOT"] = str(repo_root)
@@ -1321,10 +1588,7 @@ def main():
         env["XLATE"] = str(xlate_bin)
         os.environ["XLATE"] = str(xlate_bin)
 
-    # Ensure translation tools allow diverse macOS/Metal compiler minor versions without lock aborts
-    env["DMSH_IGNORE_LOCK"] = "1"
     env["METALNX_APP"] = "1"
-    os.environ["DMSH_IGNORE_LOCK"] = "1"
     os.environ["METALNX_APP"] = "1"
 
     build_script = repo_root / "scripts/build_ipa_from_nsp.py"
@@ -1372,9 +1636,13 @@ def main():
         else:
             game_title = primary_title_id
     elif args.folder and Path(args.folder).is_dir():
-        first_nsp = next(Path(args.folder).glob("*.nsp"), None)
-        if first_nsp:
-            clean_stem = re.sub(r"\[.*?\]", "", first_nsp.stem).strip()
+        first_pkg = None
+        for ext in ("*.nsp", "*.nsz", "*.xci", "*.xcz"):
+            first_pkg = next(Path(args.folder).glob(ext), None)
+            if first_pkg:
+                break
+        if first_pkg:
+            clean_stem = re.sub(r"\[.*?\]", "", first_pkg.stem).strip()
             game_title = clean_stem or "nxnative"
         else:
             game_title = "nxnative"

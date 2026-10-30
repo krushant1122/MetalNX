@@ -7,12 +7,21 @@ Aesthetic: macOS 27 Liquid Obsidian & Apple Pro Developer Utility.
 import os
 import subprocess
 import shutil
+import sys
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFilter
 
 HERE = Path(__file__).resolve().parent
 ICONSET = HERE / "AppIcon.iconset"
 ICNS_OUT = HERE / "AppIcon.icns"
+
+try:
+    from PIL import Image, ImageDraw, ImageFilter
+except ImportError:
+    if ICNS_OUT.exists() and ICNS_OUT.stat().st_size > 0:
+        print(f"-> Pillow not installed, but {ICNS_OUT.name} already exists. Reusing icon.")
+        sys.exit(0)
+    else:
+        raise
 
 
 def create_minimal_metalnx_icon():

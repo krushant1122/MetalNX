@@ -344,6 +344,192 @@ procC4.waitUntilExit()
 let outputC4 = String(data: pipeC4.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 assertTrue(outputC4.contains("PSO_PAIRS_TEST_PASSED"), "REGRESSION FIXED: Upstream pso_pairs.tsv packaging and offline prebuilding verified")
 
+// =========================================================================
+// REGRESSION TEST D1: Single Source of Truth for Release Version 2.2.3
+// =========================================================================
+print("\n--- Regression Test D1: Single Source of Truth for Version 2.2.3 ---")
+let procD1 = Process()
+procD1.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+procD1.arguments = ["-c", """
+import sys, json, re
+from pathlib import Path
+repo_dir = Path('\(testLauncherDir)').parent.parent
+
+# 1. install_nsp.py
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+assert install_nsp.LAUNCHER_VERSION == '2.2.3', f'install_nsp.py has version {install_nsp.LAUNCHER_VERSION}'
+
+# 2. LauncherApp.swift
+launcher_swift = (repo_dir / 'tools/launcher/LauncherApp.swift').read_text()
+assert 'let kMetalNXVersion = "2.2.3"' in launcher_swift, 'LauncherApp.swift version is not 2.2.3'
+
+# 3. .metalnx_engine_stamp.json
+stamp = json.loads((repo_dir / '.metalnx_engine_stamp.json').read_text())
+assert stamp.get('engine_version') == '2.2.3', f'Engine stamp has version {stamp.get("engine_version")}'
+
+# 4. Info.plist
+info_plist = (repo_dir / 'tools/launcher/Info.plist').read_text()
+assert '<string>2.2.3</string>' in info_plist, 'Info.plist version is not 2.2.3'
+
+print('VERSION_SINGLE_SOURCE_OF_TRUTH_PASSED')
+"""]
+let pipeD1 = Pipe()
+procD1.standardOutput = pipeD1
+try? procD1.run()
+procD1.waitUntilExit()
+let outputD1 = String(data: pipeD1.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(outputD1.contains("VERSION_SINGLE_SOURCE_OF_TRUTH_PASSED"), "REGRESSION FIXED: Single source of truth for version 2.2.3 verified across Swift, Python, Plist, and Engine Stamp")
+
+// =========================================================================
+// REGRESSION TEST D2: Translation Toolchain Lock Verification & Tamper Detection
+// =========================================================================
+print("\n--- Regression Test D2: Translation Toolchain Lock Verification & Tamper Detection ---")
+let procD2 = Process()
+procD2.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+procD2.arguments = ["-c", """
+import sys, tempfile, shutil
+from pathlib import Path
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+
+repo = install_nsp.find_repo_root()
+assert repo is not None, 'Could not locate repository root'
+
+# 1. Healthy in-repo translation toolchain must pass
+ok, issues = install_nsp.check_translation_toolchain(repo)
+assert ok, f'Healthy toolchain failed lock check: {issues}'
+
+# 2. Tampered toolchain must be caught immediately in Stage 0
+with tempfile.TemporaryDirectory() as td:
+    tpath = Path(td)
+    tools_dir = tpath / 'dm/gfx/tools'
+    tools_dir.mkdir(parents=True)
+    shutil.copy2(repo / 'dm/gfx/tools/dmsh_chain.py', tools_dir)
+    # Tampered lock file with invalid hash
+    (tools_dir / 'dmsh_chain.lock').write_text('xlate_source\t0000000000000000\\n')
+    (tools_dir / 'dmsh_xlate_bin').mkdir()
+    shutil.copy2(repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate', tools_dir / 'dmsh_xlate_bin')
+    for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll'):
+        shutil.copy2(repo / f'dm/gfx/tools/dmsh_xlate_bin/{dll}', tools_dir / 'dmsh_xlate_bin')
+    shutil.copytree(repo / 'dm/gfx/tools/dmsh_xlate', tools_dir / 'dmsh_xlate')
+
+    bad_ok, bad_issues = install_nsp.check_translation_toolchain(tpath)
+    assert not bad_ok, 'Tampered lock was not caught!'
+    assert any('lock' in b or 'mismatch' in b for b in bad_issues), f'Unexpected issues: {bad_issues}'
+
+print('TOOLCHAIN_LOCK_VERIFICATION_PASSED')
+"""]
+let pipeD2 = Pipe()
+procD2.standardOutput = pipeD2
+try? procD2.run()
+procD2.waitUntilExit()
+let outputD2 = String(data: pipeD2.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(outputD2.contains("TOOLCHAIN_LOCK_VERIFICATION_PASSED"), "REGRESSION FIXED: Translation toolchain lock verification and tamper detection passed")
+
+// =========================================================================
+// REGRESSION TEST D3: Strict Version Matching & Base-Only Update Gate
+// =========================================================================
+print("\n--- Regression Test D3: Strict Version Matching & Base-Only Update Gate ---")
+let procD3 = Process()
+procD3.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+procD3.arguments = ["-c", """
+import sys
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+
+# 1. BotW base alone -> UNTESTED_BASE_ONLY (never match 0 in 1.9.0)
+res_botw_base = install_nsp.verify_package_combo('The Legend of Zelda Breath of the Wild [01007EF00011E000][v0].nsp')
+assert res_botw_base['status'] == 'UNTESTED_BASE_ONLY', f'Expected UNTESTED_BASE_ONLY, got {res_botw_base["status"]}'
+
+# 2. BotW base + v1.9.0 update -> VERIFIED_SUPPORTED
+res_botw_combo = install_nsp.verify_package_combo([
+    'The Legend of Zelda Breath of the Wild [01007EF00011E000][v0].nsp',
+    'The Legend of Zelda Breath of the Wild Update [01007EF00011E800][v1114112].nsp'
+])
+assert res_botw_combo['status'] == 'VERIFIED_SUPPORTED', f'Expected VERIFIED_SUPPORTED, got {res_botw_combo["status"]}'
+
+# 3. TotK base alone -> UNTESTED_BASE_ONLY
+res_totk_base = install_nsp.verify_package_combo('The Legend of Zelda Tears of the Kingdom [0100F2C0115B6000][v0].nsp')
+assert res_totk_base['status'] == 'UNTESTED_BASE_ONLY', f'Expected UNTESTED_BASE_ONLY, got {res_totk_base["status"]}'
+
+# 4. Pokemon Legends: Z-A base alone -> fails verification (not supported)
+res_za_base = install_nsp.verify_package_combo('Pokemon Legends Z-A [0100C2001A8E2000][v0].nsp')
+assert not res_za_base['isSupported'], f'Pokemon Z-A must fail verification, got {res_za_base}'
+
+# 5. Advance Wars 1+2 base alone -> VERIFIED_SUPPORTED (base v0/1.0.0 is tested)
+res_aw_base = install_nsp.verify_package_combo('Advance Wars 1+2 Re-Boot Camp [0100300012F2A000][v0].nsp')
+assert res_aw_base['status'] == 'VERIFIED_SUPPORTED', f'Expected VERIFIED_SUPPORTED, got {res_aw_base["status"]}'
+
+print('STRICT_PACKAGE_COMBO_TEST_PASSED')
+"""]
+let pipeD3 = Pipe()
+procD3.standardOutput = pipeD3
+try? procD3.run()
+procD3.waitUntilExit()
+let outputD3 = String(data: pipeD3.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(outputD3.contains("STRICT_PACKAGE_COMBO_TEST_PASSED"), "REGRESSION FIXED: Strict package combination gate rejects base-only BotW/TotK/Z-A and accepts Advance Wars base")
+
+// =========================================================================
+// REGRESSION TEST D4: Folder Source Package Enumeration
+// =========================================================================
+print("\n--- Regression Test D4: Folder Source Package Enumeration ---")
+let procD4 = Process()
+procD4.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+procD4.arguments = ["-c", """
+import sys, tempfile
+from pathlib import Path
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+
+with tempfile.TemporaryDirectory() as td:
+    folder = Path(td)
+    (folder / 'Zelda [01007EF00011E000][v0].nsp').touch()
+    (folder / 'Zelda Update [01007EF00011E800][v1114112].nsz').touch()
+    (folder / 'Extra DLC [01007EF00011E001][v0].xci').touch()
+
+    res = install_nsp.verify_package_combo(folder)
+    assert res['status'] == 'VERIFIED_SUPPORTED', f'Expected VERIFIED_SUPPORTED, got {res["status"]}'
+    assert len(res.get('packages', [])) == 3, f'Expected 3 packages, got {len(res.get("packages", []))}'
+
+print('FOLDER_PACKAGE_ENUMERATION_PASSED')
+"""]
+let pipeD4 = Pipe()
+procD4.standardOutput = pipeD4
+try? procD4.run()
+procD4.waitUntilExit()
+let outputD4 = String(data: pipeD4.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(outputD4.contains("FOLDER_PACKAGE_ENUMERATION_PASSED"), "REGRESSION FIXED: Folder source package enumeration indexes .nsp, .nsz, and .xci packages")
+
+// =========================================================================
+// REGRESSION TEST D5: OS / Environment Matrix Checks
+// =========================================================================
+print("\n--- Regression Test D5: OS / Environment Matrix Checks ---")
+let procD5 = Process()
+procD5.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+procD5.arguments = ["-c", """
+import sys
+from pathlib import Path
+sys.path.insert(0, '\(testLauncherDir)')
+import install_nsp
+
+cache_path = Path.home() / 'Library/Caches/nxnative'
+dest_path = Path('/Applications')
+
+issues, warnings = install_nsp.check_os_environment(cache_path, dest_path)
+# Ensure function executes cleanly and returns structured lists
+assert isinstance(issues, list)
+assert isinstance(warnings, list)
+
+print('OS_ENVIRONMENT_MATRIX_PASSED')
+"""]
+let pipeD5 = Pipe()
+procD5.standardOutput = pipeD5
+try? procD5.run()
+procD5.waitUntilExit()
+let outputD5 = String(data: pipeD5.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+assertTrue(outputD5.contains("OS_ENVIRONMENT_MATRIX_PASSED"), "REGRESSION FIXED: OS & environment matrix checks run cleanly and report structured diagnostics")
+
 // Summary
 print("\n==================================================")
 print("TEST SUMMARY: \(testsPassed)/\(testsRun) passed (\(testsFailed) failed)")

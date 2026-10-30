@@ -112,7 +112,33 @@ func loadGamesDatabase() -> [GameDbEntry] {
     return []
 }
 
-func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
+func normalizeVersionString(_ ver: String) -> String {
+    var v = ver.trimmingCharacters(in: .whitespacesAndNewlines)
+    if v.hasPrefix("[") && v.hasSuffix("]") {
+        v = String(v.dropFirst().dropLast())
+    }
+    if v.lowercased().hasPrefix("v") {
+        v = String(v.dropFirst())
+    }
+    return v.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func isVersionTokenMatch(detected: String, candidate: String) -> Bool {
+    let d = normalizeVersionString(detected)
+    let c = normalizeVersionString(candidate)
+    if d.isEmpty || c.isEmpty { return false }
+    if d.caseInsensitiveCompare(c) == .orderedSame { return true }
+
+    // Check dot-separated numeric components (e.g. "1.6.0" matches "1.6.0")
+    let dParts = d.split(separator: ".").compactMap { Int($0) }
+    let cParts = c.split(separator: ".").compactMap { Int($0) }
+    if dParts.count > 1 && dParts.count == cParts.count && dParts == cParts {
+        return true
+    }
+    return false
+}
+
+func extractTitleAndVersionFromPath(path: String) -> (rawTid: String?, baseTid: String?, isUpdate: Bool, version: String) {
     let url = URL(fileURLWithPath: path)
     let fname = url.lastPathComponent
 
@@ -132,9 +158,11 @@ func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
     }
 
     var baseTid = rawTid
+    var isUpdate = false
     if let tid = rawTid, tid.hasSuffix("800"), let num = UInt64(tid, radix: 16) {
         let hex = String(num - 0x800, radix: 16).uppercased()
         baseTid = String(repeating: "0", count: max(0, 16 - hex.count)) + hex
+        isUpdate = true
     }
 
     var ver = "0"
@@ -144,31 +172,123 @@ func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
         ver = String(fname[match]).replacingOccurrences(of: "v", with: "").replacingOccurrences(of: "V", with: "")
     }
 
-    guard let bTid = baseTid, let entry = db.first(where: { $0.titleId.caseInsensitiveCompare(bTid) == .orderedSame }) else {
+    return (rawTid, baseTid, isUpdate, ver)
+}
+
+func verifyPackageComboFiles(basePath: String, updatePath: String, db: [GameDbEntry]) -> VerificationResult {
+    var files: [String] = []
+    if !basePath.isEmpty { files.append(basePath) }
+    if !updatePath.isEmpty { files.append(updatePath) }
+    return verifyPackageFileList(files: files, db: db)
+}
+
+func verifyPackageFolder(path: String, db: [GameDbEntry]) -> VerificationResult {
+    let fm = FileManager.default
+    guard let enumerator = fm.enumerator(atPath: path) else {
         return VerificationResult(
             status: "UNTESTED_GAME",
-            titleId: baseTid ?? rawTid ?? "UNKNOWN",
+            titleId: "UNKNOWN",
+            gameName: "Empty Folder",
+            detectedVersion: "0",
+            testedVersion: "None",
+            isSupported: false,
+            badge: "ℹ️ No Packages",
+            message: "No Switch packages found in the selected folder.",
+            unsupportedNote: "Please select a folder containing .nsp, .nsz, or .xci files.",
+            hasPatches: false,
+            testedFps: 30
+        )
+    }
+
+    var files: [String] = []
+    let validExts = Set(["nsp", "nsz", "xci", "xcz"])
+    while let elem = enumerator.nextObject() as? String {
+        let ext = (elem as NSString).pathExtension.lowercased()
+        if validExts.contains(ext) {
+            files.append("\(path)/\(elem)")
+        }
+    }
+
+    return verifyPackageFileList(files: files, db: db)
+}
+
+func verifyPackageFileList(files: [String], db: [GameDbEntry]) -> VerificationResult {
+    guard !files.isEmpty else {
+        return VerificationResult(
+            status: "UNTESTED_GAME",
+            titleId: "UNKNOWN",
+            gameName: "No Switch Packages Found",
+            detectedVersion: "0",
+            testedVersion: "None",
+            isSupported: false,
+            badge: "ℹ️ No Packages",
+            message: "No valid NSP, NSZ, or XCI files were found in the selected path.",
+            unsupportedNote: "Please select an NSP or XCI file to proceed.",
+            hasPatches: false,
+            testedFps: 30
+        )
+    }
+
+    struct PkgInfo {
+        let path: String
+        let rawTid: String?
+        let baseTid: String?
+        let isUpdate: Bool
+        let version: String
+    }
+
+    var pkgs: [PkgInfo] = []
+    for f in files {
+        let (rawTid, baseTid, isUpd, ver) = extractTitleAndVersionFromPath(path: f)
+        pkgs.append(PkgInfo(path: f, rawTid: rawTid, baseTid: baseTid, isUpdate: isUpd, version: ver))
+    }
+
+    // Find primary base title ID
+    var primaryBaseTid: String? = nil
+    for p in pkgs {
+        if let b = p.baseTid, db.contains(where: { $0.titleId.caseInsensitiveCompare(b) == .orderedSame }) {
+            primaryBaseTid = b
+            break
+        }
+    }
+    if primaryBaseTid == nil {
+        primaryBaseTid = pkgs.first(where: { $0.baseTid != nil })?.baseTid
+    }
+
+    guard let bTid = primaryBaseTid, let entry = db.first(where: { $0.titleId.caseInsensitiveCompare(bTid) == .orderedSame }) else {
+        let tidDisp = primaryBaseTid ?? "UNKNOWN"
+        return VerificationResult(
+            status: "UNTESTED_GAME",
+            titleId: tidDisp,
             gameName: "Untested Game Title",
-            detectedVersion: ver,
+            detectedVersion: pkgs.first?.version ?? "0",
             testedVersion: "None",
             isSupported: false,
             badge: "ℹ️ Untested Game",
-            message: "Title ID \(baseTid ?? rawTid ?? "Unknown") is not present in the nxnative tested database. Installation will attempt a provisional survey; port may or may not succeed.",
+            message: "Title ID \(tidDisp) is not present in the nxnative tested database. Installation will attempt a provisional survey; port may or may not succeed.",
             unsupportedNote: "This title has not been tested by the nxnative community. Graphics and stability are unverified.",
             hasPatches: false,
             testedFps: 30
         )
     }
 
+    let gamePkgs = pkgs.filter { $0.baseTid?.caseInsensitiveCompare(bTid) == .orderedSame }
+    let updatePkgs = gamePkgs.filter { $0.isUpdate || ($0.rawTid?.hasSuffix("800") ?? false) }
+    let basePkgs = gamePkgs.filter { !$0.isUpdate && !($0.rawTid?.hasSuffix("800") ?? false) }
+
+    let hasUpdate = !updatePkgs.isEmpty
+    let effectiveVer = hasUpdate ? updatePkgs[0].version : (basePkgs.first?.version ?? gamePkgs.first?.version ?? "0")
+
+    // Check version match
     var isVersionMatch = false
-    let cleanVer = ver.replacingOccurrences(of: "v", with: "").lowercased()
     for sv in entry.supportedVersions {
-        if sv.versionCode.lowercased().contains(cleanVer) || sv.displayVersion.lowercased().contains(cleanVer) || cleanVer.contains(sv.displayVersion.lowercased()) {
+        if isVersionTokenMatch(detected: effectiveVer, candidate: sv.versionCode) ||
+           isVersionTokenMatch(detected: effectiveVer, candidate: sv.displayVersion) {
             isVersionMatch = true
             break
         }
     }
-    if cleanVer == entry.testedDisplayVersion.lowercased() || entry.testedDisplayVersion.lowercased().contains(cleanVer) {
+    if isVersionTokenMatch(detected: effectiveVer, candidate: entry.testedDisplayVersion) {
         isVersionMatch = true
     }
 
@@ -177,7 +297,7 @@ func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
             status: "VERIFIED_SUPPORTED",
             titleId: bTid,
             gameName: entry.name,
-            detectedVersion: ver,
+            detectedVersion: effectiveVer,
             testedVersion: entry.testedDisplayVersion,
             isSupported: true,
             badge: "✓ Verified Compatible Release",
@@ -186,21 +306,56 @@ func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
             hasPatches: entry.hasCustomPatches,
             testedFps: entry.testedFps
         )
-    } else {
+    }
+
+    // Check base-only when update is required
+    var baseIsSupported = false
+    for sv in entry.supportedVersions {
+        if isVersionTokenMatch(detected: "0", candidate: sv.versionCode) ||
+           isVersionTokenMatch(detected: "0", candidate: sv.displayVersion) ||
+           isVersionTokenMatch(detected: "1.0.0", candidate: sv.displayVersion) {
+            baseIsSupported = true
+            break
+        }
+    }
+    if isVersionTokenMatch(detected: "0", candidate: entry.testedDisplayVersion) ||
+       isVersionTokenMatch(detected: "1.0.0", candidate: entry.testedDisplayVersion) {
+        baseIsSupported = true
+    }
+
+    if !hasUpdate && !baseIsSupported {
         return VerificationResult(
-            status: "UNTESTED_VERSION",
+            status: "UNTESTED_BASE_ONLY",
             titleId: bTid,
             gameName: entry.name,
-            detectedVersion: ver,
+            detectedVersion: effectiveVer,
             testedVersion: entry.testedDisplayVersion,
             isSupported: false,
-            badge: "⚠️ Untested Update Version",
-            message: "⚠️ Detected version '\(ver)' for \(entry.name) is unverified. Officially tested update is '\(entry.testedDisplayVersion)'.",
+            badge: "⚠️ Update Required (Base Only)",
+            message: "\(entry.name) base (v\(effectiveVer)) selected. This game requires Update v\(entry.testedDisplayVersion) to run on MetalNX. Please select the update NSP/XCI alongside the base game.",
             unsupportedNote: entry.unsupportedVersionsNote,
             hasPatches: entry.hasCustomPatches,
             testedFps: entry.testedFps
         )
     }
+
+    return VerificationResult(
+        status: "UNTESTED_VERSION",
+        titleId: bTid,
+        gameName: entry.name,
+        detectedVersion: effectiveVer,
+        testedVersion: entry.testedDisplayVersion,
+        isSupported: false,
+        badge: "⚠️ Untested Game Version",
+        message: "⚠️ Detected version '\(effectiveVer)' for \(entry.name) is unverified. Officially tested update is '\(entry.testedDisplayVersion)'.",
+        unsupportedNote: entry.unsupportedVersionsNote,
+        hasPatches: entry.hasCustomPatches,
+        testedFps: entry.testedFps
+    )
+}
+
+func verifyPackageFile(path: String, db: [GameDbEntry]) -> VerificationResult {
+    return verifyPackageComboFiles(basePath: path, updatePath: "", db: db)
 }
 
 // MARK: - Known Game Database Catalog
@@ -719,6 +874,7 @@ class PortInstallerViewModel: ObservableObject {
     @Published var lastCrashReportPath: String? = nil
     @Published var reportCopiedToast: Bool = false
     @Published var verificationResult: VerificationResult? = nil
+    @Published var allowUntestedBase: Bool = false
 
     private var activeProcess: Process?
 
@@ -729,13 +885,13 @@ class PortInstallerViewModel: ObservableObject {
     }
 
     func verifyPackages(with db: [GameDbEntry]) {
-        let target = !updateNspPath.isEmpty ? updateNspPath : baseNspPath
-        guard !target.isEmpty else {
+        if !folderPath.isEmpty {
+            verificationResult = verifyPackageFolder(path: folderPath, db: db)
+        } else if !baseNspPath.isEmpty || !updateNspPath.isEmpty {
+            verificationResult = verifyPackageComboFiles(basePath: baseNspPath, updatePath: updateNspPath, db: db)
+        } else {
             verificationResult = nil
-            refreshPreflightDoctor(with: db)
-            return
         }
-        verificationResult = verifyPackageFile(path: target, db: db)
         refreshPreflightDoctor(with: db)
     }
 
@@ -810,6 +966,10 @@ class PortInstallerViewModel: ObservableObject {
                 status = "CERTIFIED"
                 badge = "✓ Officially Certified Build"
                 detail = "Exact match for \(v.gameName) (v\(v.detectedVersion)). Prebuilt 60 FPS patches and shader tables ready."
+            } else if v.status == "UNTESTED_BASE_ONLY" {
+                status = "UPDATE_REQUIRED"
+                badge = "⚠️ Update Required (Base Only)"
+                detail = "\(v.gameName) base (v\(v.detectedVersion)) requires Update v\(v.testedVersion) to run."
             } else if v.status == "UNTESTED_VERSION" {
                 status = "MISMATCH"
                 badge = "⚠️ Version Mismatch (Tested: \(v.testedVersion))"
@@ -820,12 +980,15 @@ class PortInstallerViewModel: ObservableObject {
                 detail = "Title ID \(v.titleId) is not registered in database. Automatic survey and provisional port will run."
             }
         } else if !baseNspPath.isEmpty || !folderPath.isEmpty {
-            let target = !updateNspPath.isEmpty ? updateNspPath : baseNspPath
-            let v = verifyPackageFile(path: target, db: db)
+            let v = !folderPath.isEmpty ? verifyPackageFolder(path: folderPath, db: db) : verifyPackageComboFiles(basePath: baseNspPath, updatePath: updateNspPath, db: db)
             if v.status == "VERIFIED_SUPPORTED" {
                 status = "CERTIFIED"
                 badge = "✓ Officially Certified Build"
                 detail = "Exact match for \(v.gameName) (v\(v.detectedVersion))."
+            } else if v.status == "UNTESTED_BASE_ONLY" {
+                status = "UPDATE_REQUIRED"
+                badge = "⚠️ Update Required (Base Only)"
+                detail = "\(v.gameName) base (v\(v.detectedVersion)) requires Update v\(v.testedVersion) to run."
             } else if v.status == "UNTESTED_VERSION" {
                 status = "MISMATCH"
                 badge = "⚠️ Version Mismatch (Tested: \(v.testedVersion))"
@@ -967,7 +1130,7 @@ class PortInstallerViewModel: ObservableObject {
             updateNspPath = ""
             isCompleted = false
             errorMessage = nil
-            refreshPreflightDoctor(with: db)
+            verifyPackages(with: db)
         }
     }
 
@@ -1043,6 +1206,16 @@ class PortInstallerViewModel: ObservableObject {
         process.executableURL = URL(fileURLWithPath: pythonPath)
 
         var args = [scriptPath]
+        if let res = verificationResult, res.status == "UNTESTED_BASE_ONLY" {
+            if !allowUntestedBase {
+                errorMessage = "This game requires Update v\(res.testedVersion). Please select the update or enable 'Allow experimental base-only port'."
+                isInstalling = false
+                return
+            } else {
+                args.append("--allow-untested-base")
+            }
+        }
+
         if !folderPath.isEmpty {
             args.append(contentsOf: ["--folder", folderPath])
         } else if !baseNspPath.isEmpty {
@@ -3596,112 +3769,7 @@ struct LiquidPortInstallerView: View {
 
             // Package Compatibility Verifier Card
             if let result = installerVm.verificationResult {
-                if result.status == "VERIFIED_SUPPORTED" {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(Color.mintGreen)
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("VERIFIED COMPATIBLE RELEASE")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .tracking(0.5)
-                                    .foregroundColor(Color.mintGreen)
-                                Spacer()
-                                Text("60 FPS Patched")
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(Color.mintGreen)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.mintGreen.opacity(0.15))
-                                    .cornerRadius(4)
-                            }
-                            Text("\(result.gameName) (Version \(result.detectedVersion.lowercased().hasPrefix("v") ? result.detectedVersion : "v" + result.detectedVersion))")
-                                .font(.system(size: 12.5, weight: .semibold))
-                                .foregroundColor(.white)
-                            Text("All game-specific 60 FPS patches, native MetalFX configurations, and shader tables are registered in nxnative.")
-                                .font(.system(size: 10.5))
-                                .foregroundColor(Color.white.opacity(0.65))
-                        }
-                    }
-                    .padding(12)
-                    .background(Color.mintGreen.opacity(0.08))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.mintGreen.opacity(0.35), lineWidth: 0.5)
-                    )
-                } else if result.status == "UNTESTED_VERSION" {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(Color.accentAmber)
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("UNTESTED UPDATE VERSION")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .tracking(0.5)
-                                    .foregroundColor(Color.accentAmber)
-                                Spacer()
-                                Text("Provisional Mode")
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(Color.accentAmber)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.accentAmber.opacity(0.15))
-                                    .cornerRadius(4)
-                            }
-                            Text("\(result.gameName) (Detected: \(result.detectedVersion.lowercased().hasPrefix("v") ? result.detectedVersion : "v" + result.detectedVersion) | Officially Tested: \(result.testedVersion.lowercased().hasPrefix("v") ? result.testedVersion : "v" + result.testedVersion))")
-                                .font(.system(size: 12.5, weight: .semibold))
-                                .foregroundColor(.white)
-                            Text(result.unsupportedNote ?? "Older or unlisted game versions lack registered shader pairs and 60 FPS patches. A derived provisional profile will be generated, but porting may or may not succeed.")
-                                .font(.system(size: 10.5))
-                                .foregroundColor(Color.white.opacity(0.65))
-                        }
-                    }
-                    .padding(12)
-                    .background(Color.accentAmber.opacity(0.08))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.accentAmber.opacity(0.35), lineWidth: 0.5)
-                    )
-                } else {
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "questionmark.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundColor(Color.iceBlue)
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("UNTESTED GAME TITLE")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .tracking(0.5)
-                                    .foregroundColor(Color.iceBlue)
-                                Spacer()
-                                Text("Provisional Survey")
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(Color.iceBlue)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.iceBlue.opacity(0.15))
-                                    .cornerRadius(4)
-                            }
-                            Text("Title ID: \(result.titleId)")
-                                .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
-                                .foregroundColor(.white)
-                            Text("This title is not in the nxnative tested database. nxnative will run an automated survey and attempt a best-effort provisional port. Installation may or may not succeed.")
-                                .font(.system(size: 10.5))
-                                .foregroundColor(Color.white.opacity(0.65))
-                        }
-                    }
-                    .padding(12)
-                    .background(Color.iceBlue.opacity(0.08))
-                    .cornerRadius(10)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.iceBlue.opacity(0.35), lineWidth: 0.5)
-                    )
-                }
+                verificationCard(result: result)
             }
 
             // Database Sheet Shortcut Button
@@ -4191,8 +4259,8 @@ struct LiquidPortInstallerView: View {
                 }
                 .buttonStyle(.plain)
         .focusable(false)
-                .disabled(installerVm.isInstalling || (installerVm.baseNspPath.isEmpty && installerVm.folderPath.isEmpty) || installerVm.keysPath.isEmpty)
-                .opacity(installerVm.isInstalling || (installerVm.baseNspPath.isEmpty && installerVm.folderPath.isEmpty) ? 0.35 : 1.0)
+                .disabled(installerVm.isInstalling || (installerVm.baseNspPath.isEmpty && installerVm.folderPath.isEmpty) || installerVm.keysPath.isEmpty || (installerVm.verificationResult?.status == "UNTESTED_BASE_ONLY" && !installerVm.allowUntestedBase))
+                .opacity(installerVm.isInstalling || (installerVm.baseNspPath.isEmpty && installerVm.folderPath.isEmpty) || (installerVm.verificationResult?.status == "UNTESTED_BASE_ONLY" && !installerVm.allowUntestedBase) ? 0.35 : 1.0)
 
                 if installerVm.isInstalling {
                     Button("Abort") {
@@ -4246,6 +4314,156 @@ struct LiquidPortInstallerView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Intermediate compilation files and extracted RomFS buffers inside 'MetalNX_Workspace' will safely be moved to your macOS Trash. Your personal documents, desktop files, and game dumps will never be touched.")
+        }
+    }
+
+    @ViewBuilder
+    private func verificationCard(result: VerificationResult) -> some View {
+        if result.status == "VERIFIED_SUPPORTED" {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(Color.mintGreen)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("VERIFIED COMPATIBLE RELEASE")
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(0.5)
+                            .foregroundColor(Color.mintGreen)
+                        Spacer()
+                        Text("60 FPS Patched")
+                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.mintGreen)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.mintGreen.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    Text("\(result.gameName) (Version \(result.detectedVersion.lowercased().hasPrefix("v") ? result.detectedVersion : "v" + result.detectedVersion))")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text("All game-specific 60 FPS patches, native MetalFX configurations, and shader tables are registered in nxnative.")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.white.opacity(0.65))
+                }
+            }
+            .padding(12)
+            .background(Color.mintGreen.opacity(0.08))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.mintGreen.opacity(0.35), lineWidth: 0.5)
+            )
+        } else if result.status == "UNTESTED_BASE_ONLY" {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.octagon.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(Color.accentCoral)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("UPDATE REQUIRED (BASE ONLY)")
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(0.5)
+                            .foregroundColor(Color.accentCoral)
+                        Spacer()
+                        Text("Update Required")
+                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.accentCoral)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentCoral.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    Text("\(result.gameName) base (v\(result.detectedVersion)) selected")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text("This game requires Update v\(result.testedVersion) to run on MetalNX. Please select the update NSP/XCI alongside the base game.")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.white.opacity(0.85))
+
+                    Toggle("Allow experimental base-only port (untested)", isOn: $installerVm.allowUntestedBase)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(Color.accentAmber)
+                        .padding(.top, 4)
+                }
+            }
+            .padding(12)
+            .background(Color.accentCoral.opacity(0.08))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.accentCoral.opacity(0.35), lineWidth: 0.5)
+            )
+        } else if result.status == "UNTESTED_VERSION" {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(Color.accentAmber)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("UNTESTED UPDATE VERSION")
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(0.5)
+                            .foregroundColor(Color.accentAmber)
+                        Spacer()
+                        Text("Provisional Mode")
+                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.accentAmber)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.accentAmber.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    Text("\(result.gameName) (Detected: \(result.detectedVersion.lowercased().hasPrefix("v") ? result.detectedVersion : "v" + result.detectedVersion) | Officially Tested: \(result.testedVersion.lowercased().hasPrefix("v") ? result.testedVersion : "v" + result.testedVersion))")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text(result.unsupportedNote ?? "Older or unlisted game versions lack registered shader pairs and 60 FPS patches. A derived provisional profile will be generated, but porting may or may not succeed.")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.white.opacity(0.65))
+                }
+            }
+            .padding(12)
+            .background(Color.accentAmber.opacity(0.08))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.accentAmber.opacity(0.35), lineWidth: 0.5)
+            )
+        } else {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(Color.iceBlue)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("UNTESTED GAME TITLE")
+                            .font(.system(size: 10, weight: .bold))
+                            .tracking(0.5)
+                            .foregroundColor(Color.iceBlue)
+                        Spacer()
+                        Text("Provisional Survey")
+                            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            .foregroundColor(Color.iceBlue)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.iceBlue.opacity(0.15))
+                            .cornerRadius(4)
+                    }
+                    Text("Title ID: \(result.titleId)")
+                        .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white)
+                    Text("This title is not in the nxnative tested database. nxnative will run an automated survey and attempt a best-effort provisional port. Installation may or may not succeed.")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(Color.white.opacity(0.65))
+                }
+            }
+            .padding(12)
+            .background(Color.iceBlue.opacity(0.08))
+            .cornerRadius(10)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.iceBlue.opacity(0.35), lineWidth: 0.5)
+            )
         }
     }
 }

@@ -32,7 +32,7 @@ jobs:
       - name: Install Lint & Test Dependencies
         run: |
           python3 -m pip install --upgrade pip
-          pip install ruff lz4 capstone fonttools nsz
+          pip install ruff lz4 capstone fonttools nsz pillow
           pip install backports.zstd || true
 
       - name: Run Full MetalNX Test Suite
