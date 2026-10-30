@@ -114,6 +114,36 @@ elif [ -d "$HOME/Library/Application Support/MetalNX/python_env" ]; then
     cp -R "$HOME/Library/Application Support/MetalNX/python_env" "$APP_BUNDLE/Contents/Resources/python_env"
 fi
 
+# Clean any broken or out-of-bundle symlinks inside the app bundle
+# Codesign --deep rejects any symbolic link pointing outside the bundle hierarchy
+find "$APP_BUNDLE" -type l | while read -r link; do
+    target=$(readlink "$link")
+    case "$target" in
+        /*)
+            # Absolute symlink pointing outside bundle
+            case "$target" in
+                "$APP_BUNDLE"*) ;; # Internal absolute link is fine
+                *)
+                    # Resolve to actual file or remove to prevent codesign failure
+                    if [ -e "$target" ]; then
+                        rm "$link"
+                        cp -R "$target" "$link"
+                    else
+                        rm -f "$link"
+                    fi
+                    ;;
+            esac
+            ;;
+        *)
+            # Relative link: verify target exists within bundle
+            link_dir=$(dirname "$link")
+            if [ ! -e "$link_dir/$target" ]; then
+                rm -f "$link"
+            fi
+            ;;
+    esac
+done
+
 # Copy Info.plist
 cp "$DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 
