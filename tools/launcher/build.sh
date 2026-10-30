@@ -67,6 +67,10 @@ cp -R "$REPO_ROOT/scripts/"* "$APP_BUNDLE/Contents/Resources/scripts/"
 echo "-> Bundling native engine (dm, scripts, stamp) for zero-download offline support..."
 mkdir -p "$APP_BUNDLE/Contents/Resources/engine"
 cp -R "$REPO_ROOT/dm" "$APP_BUNDLE/Contents/Resources/engine/"
+# Purge transient intermediate build artifacts and external symlinks from bundled engine
+rm -rf "$APP_BUNDLE/Contents/Resources/engine/dm/host/gen"
+# Remove any broken or external symlinks in the bundle
+find "$APP_BUNDLE/Contents/Resources/engine" -type l -exec rm -f {} +
 cp -R "$REPO_ROOT/scripts" "$APP_BUNDLE/Contents/Resources/engine/"
 cp "$REPO_ROOT/.metalnx_engine_stamp.json" "$APP_BUNDLE/Contents/Resources/engine/"
 
